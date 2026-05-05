@@ -299,8 +299,10 @@ func TestResourceLimitsHashInTemplateGetsUpdatedEvenIfNoLimitsAreSet(t *testing.
 	}
 
 	tmpl.RenderBang(nil, &liquid.RenderOptions{})
-	if tmpl.ResourceLimits().AssignScore() <= 0 {
-		t.Error("Expected assign_score to be greater than 0")
+	// Assign scoring is skipped when no AssignScoreLimit is configured,
+	// matching Ruby Liquid's default behavior.
+	if tmpl.ResourceLimits().AssignScore() != 0 {
+		t.Errorf("Expected assign_score to be 0 without a limit configured, got %d", tmpl.ResourceLimits().AssignScore())
 	}
 	if tmpl.ResourceLimits().RenderScore() <= 0 {
 		t.Error("Expected render_score to be greater than 0")
@@ -422,8 +424,10 @@ func TestDefaultResourceLimitsUnaffectedByRenderWithContext(t *testing.T) {
 	}
 
 	tmpl.RenderBang(ctx, &liquid.RenderOptions{})
-	if ctx.ResourceLimits().AssignScore() <= 0 {
-		t.Error("Expected assign_score to be greater than 0")
+	// Assign scoring is skipped when no AssignScoreLimit is configured,
+	// matching Ruby Liquid's default behavior.
+	if ctx.ResourceLimits().AssignScore() != 0 {
+		t.Errorf("Expected assign_score to be 0 without a limit configured, got %d", ctx.ResourceLimits().AssignScore())
 	}
 	if ctx.ResourceLimits().RenderScore() <= 0 {
 		t.Error("Expected render_score to be greater than 0")
