@@ -132,8 +132,11 @@ func assignScoreOf(obj interface{}) int {
 	env := liquid.NewEnvironment()
 	tags.RegisterStandardTags(env) // Register tags for parsing
 	drop := NewObjectWrapperDrop(obj)
-	// Create resource limits for tracking assign score
-	rl := liquid.NewResourceLimits(liquid.ResourceLimitsConfig{})
+	// Create resource limits with an explicit limit so scoring is active
+	limit := 1000000
+	rl := liquid.NewResourceLimits(liquid.ResourceLimitsConfig{
+		AssignScoreLimit: &limit,
+	})
 	ctx := liquid.BuildContext(liquid.ContextConfig{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"drop": drop}},
