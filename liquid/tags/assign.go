@@ -56,11 +56,11 @@ func (a *AssignTag) RenderToOutputBuffer(context liquid.TagContext, output *stri
 	ctx := context.Context().(*liquid.Context)
 	ctx.SetLast(a.to, val)
 
-	// Increment assign score — only when a limit is configured.
+	// Increment assign score — only when a positive limit is configured.
 	// Matches Ruby Liquid behavior: scoring is skipped when no
-	// assign_score_limit is set (the default for open-source usage).
+	// assign_score_limit is set or when it is 0 (the default).
 	rl := context.ResourceLimits()
-	if rl != nil && rl.AssignScoreLimit() != nil {
+	if rl != nil && rl.AssignScoreLimit() != nil && *rl.AssignScoreLimit() > 0 {
 		score := assignScoreOf(val)
 		rl.IncrementAssignScore(score)
 	}

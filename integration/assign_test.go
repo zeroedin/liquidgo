@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"math"
 	"testing"
 
 	"github.com/Notifuse/liquidgo/liquid"
@@ -132,8 +133,8 @@ func assignScoreOf(obj interface{}) int {
 	env := liquid.NewEnvironment()
 	tags.RegisterStandardTags(env) // Register tags for parsing
 	drop := NewObjectWrapperDrop(obj)
-	// Create resource limits with an explicit limit so scoring is active
-	limit := 1000000
+	// Create resource limits with an unbounded limit so scoring is active
+	limit := math.MaxInt
 	rl := liquid.NewResourceLimits(liquid.ResourceLimitsConfig{
 		AssignScoreLimit: &limit,
 	})
