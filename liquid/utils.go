@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,6 +76,29 @@ func sliceCollectionUsingEach(collection interface{}, from int, to *int) []inter
 
 	// Use reflection to iterate
 	v := reflect.ValueOf(collection)
+
+	// Handle maps: yield [key, value] pairs (Ruby Liquid hash iteration)
+	if v.Kind() == reflect.Map {
+		keys := v.MapKeys()
+		if v.Type().Key().Kind() == reflect.String {
+			sort.Slice(keys, func(i, j int) bool {
+				return keys[i].String() < keys[j].String()
+			})
+		}
+		index := 0
+		for _, key := range keys {
+			if to != nil && *to <= index {
+				break
+			}
+			if from <= index {
+				pair := []interface{}{key.Interface(), v.MapIndex(key).Interface()}
+				segments = append(segments, pair)
+			}
+			index++
+		}
+		return segments
+	}
+
 	if v.Kind() != reflect.Slice && v.Kind() != reflect.Array {
 		return []interface{}{}
 	}

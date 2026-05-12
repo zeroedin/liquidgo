@@ -1,6 +1,7 @@
 package liquid
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -406,10 +407,15 @@ func TestToIntegerEdgeCases(t *testing.T) {
 
 // TestSliceCollectionEdgeCases tests SliceCollection edge cases
 func TestSliceCollectionEdgeCases(t *testing.T) {
-	// Test with non-slice, non-string collection
+	// Test with map collection - should yield [key, value] pairs
 	result := SliceCollection(map[string]interface{}{"key": "value"}, 0, nil)
-	if len(result) != 0 {
-		t.Errorf("Expected empty result for map, got %d items", len(result))
+	if len(result) != 1 {
+		t.Errorf("Expected 1 pair for single-entry map, got %d items", len(result))
+	} else {
+		pair, ok := result[0].([]interface{})
+		if !ok || len(pair) != 2 || pair[0] != "key" || pair[1] != "value" {
+			t.Errorf("Expected [key, value] pair, got %v", result[0])
+		}
 	}
 
 	// Test with empty array
@@ -613,4 +619,87 @@ type testStringer struct {
 
 func (t *testStringer) String() string {
 	return t.value
+}
+
+func TestSliceCollectionMap(t *testing.T) {
+	t.Run("multi-key map yields sorted key-value pairs", func(t *testing.T) {
+		m := map[string]interface{}{"b": 2, "a": 1, "c": 3}
+		result := SliceCollection(m, 0, nil)
+		if len(result) != 3 {
+			t.Fatalf("expected 3 pairs, got %d", len(result))
+		}
+		expected := [][]interface{}{{"a", 1}, {"b", 2}, {"c", 3}}
+		for i, exp := range expected {
+			pair := result[i].([]interface{})
+			if pair[0] != exp[0] || pair[1] != exp[1] {
+				t.Errorf("pair[%d] = %v, want %v", i, pair, exp)
+			}
+		}
+	})
+
+	t.Run("empty map yields empty slice", func(t *testing.T) {
+		result := SliceCollection(map[string]interface{}{}, 0, nil)
+		if len(result) != 0 {
+			t.Errorf("expected 0 pairs, got %d", len(result))
+		}
+	})
+
+	t.Run("from/to slicing on map", func(t *testing.T) {
+		m := map[string]interface{}{"a": 1, "b": 2, "c": 3, "d": 4}
+		to := 3
+		result := SliceCollection(m, 1, &to)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 pairs, got %d", len(result))
+		}
+		pair0 := result[0].([]interface{})
+		pair1 := result[1].([]interface{})
+		if pair0[0] != "b" || pair1[0] != "c" {
+			t.Errorf("expected keys [b, c], got [%v, %v]", pair0[0], pair1[0])
+		}
+	})
+
+	t.Run("map with non-string keys", func(t *testing.T) {
+		m := map[int]string{2: "two", 1: "one"}
+		result := SliceCollection(m, 0, nil)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 pairs, got %d", len(result))
+		}
+		for _, item := range result {
+			pair := item.([]interface{})
+			if len(pair) != 2 {
+				t.Errorf("expected pair of length 2, got %d", len(pair))
+			}
+		}
+	})
+
+	t.Run("map with nested values", func(t *testing.T) {
+		m := map[string]interface{}{
+			"user": map[string]interface{}{"name": "Alice"},
+		}
+		result := SliceCollection(m, 0, nil)
+		if len(result) != 1 {
+			t.Fatalf("expected 1 pair, got %d", len(result))
+		}
+		pair := result[0].([]interface{})
+		if pair[0] != "user" {
+			t.Errorf("expected key 'user', got %v", pair[0])
+		}
+		nested, ok := pair[1].(map[string]interface{})
+		if !ok || nested["name"] != "Alice" {
+			t.Errorf("expected nested map with name=Alice, got %v", pair[1])
+		}
+	})
+
+	t.Run("map via reflect.Map kind", func(t *testing.T) {
+		type CustomMap map[string]int
+		m := CustomMap{"x": 10, "y": 20}
+		v := reflect.ValueOf(m)
+		if v.Kind() != reflect.Map {
+			t.Fatal("expected reflect.Map kind")
+		}
+		result := SliceCollection(m, 0, nil)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 pairs, got %d", len(result))
+		}
+	})
 }

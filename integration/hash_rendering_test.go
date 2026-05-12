@@ -184,6 +184,45 @@ func TestHashRendering_RenderHashWithArrayValuesEmpty(t *testing.T) {
 	}
 }
 
+// TestHashRendering_ForLoopOverMap tests iterating a map[string]interface{} with {% for %}.
+func TestHashRendering_ForLoopOverMap(t *testing.T) {
+	assigns := map[string]interface{}{
+		"my_map": map[string]interface{}{"b": 2, "a": 1, "c": 3},
+	}
+
+	t.Run("pair indexing", func(t *testing.T) {
+		assertTemplateResult(t,
+			"a=1 b=2 c=3 ",
+			`{% for pair in my_map %}{{ pair[0] }}={{ pair[1] }} {% endfor %}`,
+			assigns,
+		)
+	})
+
+	t.Run("forloop variables", func(t *testing.T) {
+		assertTemplateResult(t,
+			"3",
+			`{% for pair in my_map %}{% if forloop.last %}{{ forloop.length }}{% endif %}{% endfor %}`,
+			assigns,
+		)
+	})
+
+	t.Run("empty map", func(t *testing.T) {
+		assertTemplateResult(t,
+			"empty",
+			`{% for pair in empty_map %}{{ pair[0] }}{% else %}empty{% endfor %}`,
+			map[string]interface{}{"empty_map": map[string]interface{}{}},
+		)
+	})
+
+	t.Run("limit and offset", func(t *testing.T) {
+		assertTemplateResult(t,
+			"b=2 ",
+			`{% for pair in my_map limit:1 offset:1 %}{{ pair[0] }}={{ pair[1] }} {% endfor %}`,
+			assigns,
+		)
+	})
+}
+
 // renderTemplateForTest is a helper to render templates for testing.
 func renderTemplateForTest(template string, assigns map[string]interface{}) string {
 	env := liquid.NewEnvironment()
