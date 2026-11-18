@@ -54,9 +54,12 @@ func (a *AssignTag) RenderToOutput(context liquid.TagContext, output *liquid.Out
 	ctx := context.Context().(*liquid.Context)
 	ctx.SetLast(a.to, val)
 
-	// Increment assign score
+	// Increment assign score, only when an assign score limit is set.
+	// Scoring walks the whole value, and nothing reads the score when no
+	// limit is set. A limit of 0 is a limit. This is the fork's one
+	// difference from upstream: docs/differences-from-upstream.md.
 	rl := context.ResourceLimits()
-	if rl != nil {
+	if rl != nil && rl.AssignScoreLimit() != nil {
 		score := assignScoreOf(val)
 		rl.IncrementAssignScore(score)
 	}
