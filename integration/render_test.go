@@ -4,6 +4,7 @@ import (
 	gocontext "context"
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -395,9 +396,11 @@ func TestRenderOptions(t *testing.T) {
 		t.Errorf("WithStrictFilters: errors %v, want the undefined filter", res.Errors)
 	}
 
-	// The scores a render counted come with its result
+	// The scores a render counted come with its result. An assign is scored
+	// only when a limit is set (the fork's difference, #7).
 	loop := rcParse(t, env, `{% for i in (1..10) %}{% assign x = i %}{% endfor %}`)
-	if res, _ := loop.Render(gocontext.Background(), nil); res.RenderScore == 0 || res.AssignScore == 0 {
+	unreached := math.MaxInt
+	if res, _ := loop.Render(gocontext.Background(), nil, liquid.WithLimits(liquid.ResourceLimitsConfig{AssignScoreLimit: &unreached})); res.RenderScore == 0 || res.AssignScore == 0 {
 		t.Errorf("scores %d and %d, want both counted", res.RenderScore, res.AssignScore)
 	}
 }
