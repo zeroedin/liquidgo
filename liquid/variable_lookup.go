@@ -1,24 +1,26 @@
 package liquid
 
 import (
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
-	"sync"
+	"unicode/utf8"
 )
 
 var (
 	variableLookupCommandMethods = []string{"size", "first", "last", "empty"}
 )
 
-// globalVariableLookupCache provides thread-safe caching of parsed variable lookups.
-// Optimization: Avoids re-parsing the same variable lookups repeatedly.
-var globalVariableLookupCache sync.Map // map[string]*VariableLookup
-
 // VariableLookup represents a variable lookup expression.
 type VariableLookup struct {
 	name         interface{}
 	lookups      []interface{}
 	commandFlags uint
+	// indexFlags marks the lookups written after a dot with digits only
+	// (items.0): a list reads them as an index, as Notifuse writes the
+	// paths of its display conditions, where Ruby keeps the string "0".
+	indexFlags uint
 }
 
 // parseVariableTokens tokenizes a variable expression, properly handling nested brackets.
@@ -44,6 +46,12 @@ func parseVariableTokens(markup string) []string {
 					bracketCount--
 				}
 				i++
+			}
+			if bracketCount > 0 {
+				// never closed: as Ruby's VariableParser, which does not
+				// match here, the bracket is skipped and the scan goes on
+				i = start + 1
+				continue
 			}
 			tokens = append(tokens, markup[start:i])
 		case (markup[i] >= 'a' && markup[i] <= 'z') ||
@@ -75,27 +83,38 @@ func parseVariableTokens(markup string) []string {
 	return tokens
 }
 
-// VariableLookupParse parses a markup string into a VariableLookup.
-// Optimization: Uses global cache for better performance across templates.
-func VariableLookupParse(markup string, ss *StringScanner, cache map[string]interface{}) *VariableLookup {
-	// Try global cache first for simple variable lookups (no dynamic parts)
-	// We can only cache if the markup doesn't contain dynamic expressions in brackets
-	canCache := !strings.Contains(markup, "[")
-
-	if canCache {
-		if cached, ok := globalVariableLookupCache.Load(markup); ok {
-			return cached.(*VariableLookup)
+// bracketDepth returns the deepest nesting of brackets in markup, outside
+// quoted strings.
+func bracketDepth(markup string) int {
+	depth, deepest := 0, 0
+	for i := 0; i < len(markup); i++ {
+		switch markup[i] {
+		case '\'', '"':
+			if end := strings.IndexByte(markup[i+1:], markup[i]); end >= 0 {
+				i += end + 1
+			}
+		case '[':
+			depth++
+			deepest = max(deepest, depth)
+		case ']':
+			depth = max(depth-1, 0)
 		}
+	}
+	return deepest
+}
+
+// VariableLookupParse parses a markup string into a VariableLookup.
+func VariableLookupParse(markup string, ss *StringScanner, cache map[string]interface{}) *VariableLookup {
+	// Each level of brackets parses the markup inside it again: the depth
+	// of blocks bounds them, so that the cost stays linear.
+	if bracketDepth(markup) > blockMaxDepth {
+		panic(NewStackLevelError("Nesting too deep"))
 	}
 
 	// Tokenize the variable expression, properly handling nested brackets
 	matches := parseVariableTokens(markup)
 	if len(matches) == 0 {
-		vl := &VariableLookup{name: markup, lookups: []interface{}{}}
-		if canCache {
-			globalVariableLookupCache.Store(markup, vl)
-		}
-		return vl
+		return &VariableLookup{name: markup, lookups: []interface{}{}}
 	}
 
 	lookups := make([]interface{}, len(matches))
@@ -110,7 +129,6 @@ func VariableLookupParse(markup string, ss *StringScanner, cache map[string]inte
 	if nameStr, ok := name.(string); ok {
 		if strings.HasPrefix(nameStr, "[") && strings.HasSuffix(nameStr, "]") {
 			name = Parse(nameStr[1:len(nameStr)-1], ss, cache)
-			canCache = false // Can't cache variable lookups with dynamic names
 		}
 	}
 
@@ -126,17 +144,13 @@ func VariableLookupParse(markup string, ss *StringScanner, cache map[string]inte
 			if strings.HasPrefix(lookupStr, "[") && strings.HasSuffix(lookupStr, "]") {
 				// Parse bracket expression
 				vl.lookups[i] = Parse(lookupStr[1:len(lookupStr)-1], ss, cache)
-				canCache = false // Can't cache variable lookups with dynamic expressions
 			} else if isCommandMethod(lookupStr) {
 				// Mark as command method
 				vl.commandFlags |= 1 << i
+			} else if isDigits(lookupStr) {
+				vl.indexFlags |= 1 << i
 			}
 		}
-	}
-
-	// Cache the result if it's cacheable (no dynamic parts)
-	if canCache {
-		globalVariableLookupCache.Store(markup, vl)
 	}
 
 	return vl
@@ -212,9 +226,14 @@ func (vl *VariableLookup) Lookups() []interface{} {
 // Evaluate evaluates the variable lookup in the given context.
 func (vl *VariableLookup) Evaluate(context *Context) interface{} {
 	name := context.Evaluate(vl.name)
-	obj := context.FindVariable(ToString(name, nil), false)
+	// As Ruby's find_variable, whose raise_on_not_found is true: with strict
+	// variables, a name that resolves to nothing is an UndefinedVariable
+	obj := context.FindVariable(ToString(name, nil), true)
 
 	for i, lookup := range vl.lookups {
+		// Each step reads the liquid form of the object it reached, as Ruby
+		// calls to_liquid on every result of a lookup
+		obj = ToLiquid(obj)
 		key := context.Evaluate(lookup)
 		key = ToLiquidValue(key)
 
@@ -223,8 +242,8 @@ func (vl *VariableLookup) Evaluate(context *Context) interface{} {
 		// Fast path: Check for map[string]interface{} first (most common case)
 		if m, ok := obj.(map[string]interface{}); ok {
 			if k, ok := key.(string); ok {
-				if val, exists := m[k]; exists {
-					obj = val
+				if value, exists := m[k]; exists {
+					obj = context.mapValue(m, k, value) // a func is called, as Ruby's lookup_and_evaluate
 					continue
 				}
 			}
@@ -239,24 +258,23 @@ func (vl *VariableLookup) Evaluate(context *Context) interface{} {
 			}
 		}
 
-		// Array index access
+		// Array index access. An Integer key reads the array as Ruby's
+		// Array#[]: a negative index counts from the end, and an index out
+		// of range gives nil, which strict variables do not raise. Any other
+		// key, such as '1' or 1.5, is no index, as in Ruby.
 		if arr, ok := obj.([]interface{}); ok {
-			if idx, err := ToInteger(key); err == nil {
-				if idx >= 0 && idx < len(arr) {
-					obj = arr[idx]
-					continue
-				}
+			if idx, ok := vl.indexKey(i, key); ok {
+				obj = indexOf(len(arr), idx, func(i int) interface{} { return context.itemOf(arr, i) })
+				continue
 			}
 		} else if obj != nil {
 			// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
 			// This matches Ruby's duck-typing behavior: arrays respond to []
 			v := reflect.ValueOf(obj)
 			if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-				if idx, err := ToInteger(key); err == nil {
-					if idx >= 0 && idx < v.Len() {
-						obj = v.Index(idx).Interface()
-						continue
-					}
+				if idx, ok := vl.indexKey(i, key); ok {
+					obj = indexOf(v.Len(), idx, func(i int) interface{} { return itemAt(v, i) })
+					continue
 				}
 			}
 
@@ -274,9 +292,11 @@ func (vl *VariableLookup) Evaluate(context *Context) interface{} {
 						}
 					}
 				}
-				// Try key as-is for other map key types
+				// Try key as-is for other map key types; a nil key finds
+				// nothing, as in Ruby
 				keyValue := reflect.ValueOf(key)
-				if keyValue.Type().ConvertibleTo(v.Type().Key()) {
+				// a key Go cannot hash (a map, a list) finds nothing
+				if keyValue.IsValid() && keyValue.Comparable() && keyValue.Type().ConvertibleTo(v.Type().Key()) {
 					mapValue := v.MapIndex(keyValue.Convert(v.Type().Key()))
 					if mapValue.IsValid() {
 						obj = mapValue.Interface()
@@ -331,12 +351,12 @@ func (vl *VariableLookup) Evaluate(context *Context) interface{} {
 							continue
 						case "first":
 							if v.Len() > 0 {
-								obj = v.Index(0).Interface()
+								obj = itemAt(v, 0)
 								continue
 							}
 						case "last":
 							if v.Len() > 0 {
-								obj = v.Index(v.Len() - 1).Interface()
+								obj = itemAt(v, v.Len()-1)
 								continue
 							}
 						case "empty":
@@ -345,35 +365,41 @@ func (vl *VariableLookup) Evaluate(context *Context) interface{} {
 						}
 					}
 				}
+				// size on a map without a "size" key is its number of keys (Ruby Hash#size)
+				if keyStr == "size" && obj != nil && reflect.ValueOf(obj).Kind() == reflect.Map {
+					obj = reflect.ValueOf(obj).Len()
+					continue
+				}
 				// Command methods for strings
 				if str, ok := obj.(string); ok {
 					switch keyStr {
 					case "size":
-						obj = len(str)
+						obj = utf8.RuneCountInString(str)
 						continue
 					case "empty":
 						obj = str == ""
+						continue
+					case "first": // its first character, as Shopify Liquid 5.14
+						obj = firstChar(str)
+						continue
+					case "last":
+						obj = lastChar(str)
 						continue
 					}
 				}
 			}
 
-			// Try drop method invocation (for drops like forloop.last)
-			// This handles objects that respond to methods
-			if IsInvokable(obj, keyStr) {
-				dropResult := InvokeDropOn(obj, keyStr)
-				// Even if result is nil, we found the method, so use it
-				obj = dropResult
+			// A drop gives its keys (forloop.last); a plain Go struct
+			// exposes nothing, as a Ruby object that is not a Drop
+			if g, ok := asDrop(obj); ok {
+				obj = dropGet(context, g, keyStr)
 				continue
 			}
-
-			// Check for LiquidMethodMissing
-			if dropWithMissing, ok := obj.(interface {
-				LiquidMethodMissing(string) interface{}
-			}); ok {
-				obj = dropWithMissing.LiquidMethodMissing(keyStr)
-				continue
-			}
+		} else if g, ok := asDrop(obj); ok {
+			// A key that is not a string is a key the drop does not
+			// declare, as Ruby's invoke_drop(0)
+			obj = dropGet(context, g, ToString(key, nil))
+			continue
 		}
 
 		// Not found
@@ -383,10 +409,86 @@ func (vl *VariableLookup) Evaluate(context *Context) interface{} {
 		return nil
 	}
 
+	// A nil pointer is nil, in a condition as in the output, as Ruby's nil
+	if isNilPointer(obj) {
+		return nil
+	}
 	return ToLiquid(obj)
 }
 
 // ToString converts a value to string.
 func ToString(v interface{}, ctx *Context) string {
 	return ToS(v, nil)
+}
+
+// integerKey returns key as an index when it is an integer, as Ruby's
+// key.is_a?(Integer) in a lookup of an array: a Go integer of any kind,
+// named or not, or a float with no fraction, which is how a JSON number comes
+// to Go. An index beyond the range of int is out of range of any list.
+func integerKey(key interface{}) (int, bool) {
+	switch k := key.(type) {
+	case int:
+		return k, true
+	case float64:
+		return integralFloat(k)
+	}
+	v := reflect.ValueOf(key)
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return saturateInt64(v.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return saturateUint64(v.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return integralFloat(v.Float())
+	}
+	return 0, false
+}
+
+// integralFloat returns f as an index when it has no fraction.
+func integralFloat(f float64) (int, bool) {
+	if f != math.Trunc(f) || math.Abs(f) >= 1<<53 {
+		return 0, false
+	}
+	return saturateInt64(int64(f)), true
+}
+
+// indexOf returns item idx of a list of n items, as Ruby's Array#[]: a
+// negative index counts from the end, and one out of range gives nil.
+func indexOf(n, idx int, item func(int) interface{}) interface{} {
+	if idx < 0 {
+		idx += n
+	}
+	if idx < 0 || idx >= n {
+		return nil
+	}
+	return item(idx)
+}
+
+// indexKey returns key, the lookup at i, as an index of a list: an integer
+// (integerKey), or digits written after a dot (indexFlags).
+func (vl *VariableLookup) indexKey(i int, key interface{}) (int, bool) {
+	if idx, ok := integerKey(key); ok {
+		return idx, true
+	}
+	if s, ok := key.(string); ok && i < 64 && vl.indexFlags&(1<<i) != 0 {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return math.MaxInt, true // more digits than an int64: out of range
+		}
+		return saturateInt64(n), true
+	}
+	return 0, false
+}
+
+// isDigits reports whether s is made of ASCII digits only.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

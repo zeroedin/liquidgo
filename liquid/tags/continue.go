@@ -1,7 +1,7 @@
 package tags
 
 import (
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 // ContinueTag represents a continue tag that causes a for loop to skip to the next iteration.
@@ -16,8 +16,8 @@ func NewContinueTag(tagName, markup string, parseContext liquid.ParseContextInte
 	}
 }
 
-// RenderToOutputBuffer renders the continue tag by pushing a continue interrupt.
-func (c *ContinueTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the continue tag by pushing a continue interrupt.
+func (c *ContinueTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	interrupt := liquid.NewContinueInterrupt()
 	context.PushInterrupt(interrupt)
 }

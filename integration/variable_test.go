@@ -3,8 +3,8 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // TestVariable_SimpleVariable tests simple variable rendering.
@@ -135,8 +135,7 @@ func TestVariable_NilRendersAsEmptyString(t *testing.T) {
 // TestVariable_PresetAssigns tests preset assigns on template.
 // Ported from: test_preset_assigns
 func TestVariable_PresetAssigns(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	tmpl, err := liquid.ParseTemplate("{{ test }}", &liquid.TemplateOptions{
 		Environment: env,
@@ -147,13 +146,13 @@ func TestVariable_PresetAssigns(t *testing.T) {
 
 	// In Go, we don't have template.assigns like Ruby
 	// Instead, we pass assigns to Render
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"test": "worked"}},
 		RethrowErrors:      false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != "worked" {
 		t.Errorf("Expected 'worked', got %q", output)
 	}
@@ -162,8 +161,7 @@ func TestVariable_PresetAssigns(t *testing.T) {
 // TestVariable_ReuseParsedTemplate tests reusing a parsed template.
 // Ported from: test_reuse_parsed_template
 func TestVariable_ReuseParsedTemplate(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	tmpl, err := liquid.ParseTemplate("{{ greeting }} {{ name }}", &liquid.TemplateOptions{
 		Environment: env,
@@ -173,34 +171,34 @@ func TestVariable_ReuseParsedTemplate(t *testing.T) {
 	}
 
 	// First render
-	ctx1 := liquid.BuildContext(liquid.ContextConfig{
+	ctx1 := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"greeting": "Hello", "name": "Tobi"}},
 		RethrowErrors:      false,
-	})
-	output1 := tmpl.Render(ctx1, &liquid.RenderOptions{})
+	}
+	output1 := renderRuby(tmpl, ctx1, &rubyOptions{})
 	if output1 != "Hello Tobi" {
 		t.Errorf("Expected 'Hello Tobi', got %q", output1)
 	}
 
 	// Second render with missing variable
-	ctx2 := liquid.BuildContext(liquid.ContextConfig{
+	ctx2 := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"greeting": "Hello", "unknown": "Tobi"}},
 		RethrowErrors:      false,
-	})
-	output2 := tmpl.Render(ctx2, &liquid.RenderOptions{})
+	}
+	output2 := renderRuby(tmpl, ctx2, &rubyOptions{})
 	if output2 != "Hello " {
 		t.Errorf("Expected 'Hello ', got %q", output2)
 	}
 
 	// Third render
-	ctx3 := liquid.BuildContext(liquid.ContextConfig{
+	ctx3 := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"greeting": "Hello", "name": "Brian"}},
 		RethrowErrors:      false,
-	})
-	output3 := tmpl.Render(ctx3, &liquid.RenderOptions{})
+	}
+	output3 := renderRuby(tmpl, ctx3, &rubyOptions{})
 	if output3 != "Hello Brian" {
 		t.Errorf("Expected 'Hello Brian', got %q", output3)
 	}
@@ -210,8 +208,7 @@ func TestVariable_ReuseParsedTemplate(t *testing.T) {
 // Ported from: test_assigns_not_polluted_from_template
 func TestVariable_AssignsNotPollutedFromTemplate(t *testing.T) {
 	t.Skip("Known issue - related to variable lookup evaluation")
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	tmpl, err := liquid.ParseTemplate("{{ test }}{% assign test = 'bar' %}{{ test }}", &liquid.TemplateOptions{
 		Environment: env,
@@ -221,45 +218,45 @@ func TestVariable_AssignsNotPollutedFromTemplate(t *testing.T) {
 	}
 
 	// First render with preset assign
-	ctx1 := liquid.BuildContext(liquid.ContextConfig{
+	ctx1 := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"test": "baz"}},
 		RethrowErrors:      false,
-	})
-	output1 := tmpl.Render(ctx1, &liquid.RenderOptions{})
+	}
+	output1 := renderRuby(tmpl, ctx1, &rubyOptions{})
 	if output1 != "bazbar" {
 		t.Errorf("Expected 'bazbar', got %q", output1)
 	}
 
 	// Second render - should be same
-	ctx2 := liquid.BuildContext(liquid.ContextConfig{
+	ctx2 := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"test": "baz"}},
 		RethrowErrors:      false,
-	})
-	output2 := tmpl.Render(ctx2, &liquid.RenderOptions{})
+	}
+	output2 := renderRuby(tmpl, ctx2, &rubyOptions{})
 	if output2 != "bazbar" {
 		t.Errorf("Expected 'bazbar', got %q", output2)
 	}
 
 	// Third render with different assign
-	ctx3 := liquid.BuildContext(liquid.ContextConfig{
+	ctx3 := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"test": "foo"}},
 		RethrowErrors:      false,
-	})
-	output3 := tmpl.Render(ctx3, &liquid.RenderOptions{})
+	}
+	output3 := renderRuby(tmpl, ctx3, &rubyOptions{})
 	if output3 != "foobar" {
 		t.Errorf("Expected 'foobar', got %q", output3)
 	}
 
 	// Fourth render - should revert to preset
-	ctx4 := liquid.BuildContext(liquid.ContextConfig{
+	ctx4 := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"test": "baz"}},
 		RethrowErrors:      false,
-	})
-	output4 := tmpl.Render(ctx4, &liquid.RenderOptions{})
+	}
+	output4 := renderRuby(tmpl, ctx4, &rubyOptions{})
 	if output4 != "bazbar" {
 		t.Errorf("Expected 'bazbar', got %q", output4)
 	}
@@ -337,9 +334,7 @@ func TestVariable_FilterWithSingleTrailingComma(t *testing.T) {
 	template := `{{ "hello" | append: "world", }}`
 
 	// In strict mode, this should raise an error
-	env := liquid.NewEnvironment()
-	env.SetErrorMode("strict")
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), ErrorMode: "strict"})
 
 	_, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{
 		Environment: env,
@@ -349,10 +344,6 @@ func TestVariable_FilterWithSingleTrailingComma(t *testing.T) {
 	}
 
 	// In rigid mode, it should work
-	env2 := liquid.NewEnvironment()
-	env2.SetErrorMode("rigid")
-	tags.RegisterStandardTags(env2)
-
 	assertTemplateResult(t, "helloworld", template, map[string]interface{}{}, TemplateResultOptions{ErrorMode: "rigid"})
 }
 
@@ -363,9 +354,7 @@ func TestVariable_MultipleFiltersWithTrailingCommas(t *testing.T) {
 	template := `{{ "hello" | append: "1", | append: "2", }}`
 
 	// In strict mode, this should raise an error
-	env := liquid.NewEnvironment()
-	env.SetErrorMode("strict")
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), ErrorMode: "strict"})
 
 	_, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{
 		Environment: env,
@@ -385,9 +374,7 @@ func TestVariable_FilterWithColonButNoArguments(t *testing.T) {
 	template := `{{ "test" | upcase: }}`
 
 	// In strict mode, this should raise an error
-	env := liquid.NewEnvironment()
-	env.SetErrorMode("strict")
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), ErrorMode: "strict"})
 
 	_, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{
 		Environment: env,
@@ -407,9 +394,7 @@ func TestVariable_FilterChainWithColonNoArgs(t *testing.T) {
 	template := `{{ "test" | append: "x" | upcase: }}`
 
 	// In strict mode, this should raise an error
-	env := liquid.NewEnvironment()
-	env.SetErrorMode("strict")
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), ErrorMode: "strict"})
 
 	_, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{
 		Environment: env,
@@ -429,9 +414,7 @@ func TestVariable_CombiningTrailingCommaAndEmptyArgs(t *testing.T) {
 	template := `{{ "test" | append: "x", | upcase: }}`
 
 	// In strict mode, this should raise an error
-	env := liquid.NewEnvironment()
-	env.SetErrorMode("strict")
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), ErrorMode: "strict"})
 
 	_, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{
 		Environment: env,

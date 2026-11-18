@@ -130,10 +130,20 @@ func TestStandardFiltersURLDecode(t *testing.T) {
 		t.Errorf("URLDecode(nil) = %q, want empty string", result2)
 	}
 
-	// Test with invalid encoding
-	_, err3 := sf.URLDecode("%invalid")
-	if err3 == nil {
-		t.Error("Expected error for invalid URL encoding")
+	// A % that two hexadecimal digits do not follow stays as written, as Ruby's
+	// CGI.unescape leaves it (before, the whole value was lost to an error).
+	result3, err3 := sf.URLDecode("%invalid")
+	if err3 != nil || result3 != "%invalid" {
+		t.Errorf("URLDecode(%%invalid) = %q, %v; want \"%%invalid\", no error", result3, err3)
+	}
+	result4, err4 := sf.URLDecode("%E2%82%AC%2")
+	if err4 != nil || result4 != "€%2" {
+		t.Errorf("URLDecode(%%E2%%82%%AC%%2) = %q, %v; want \"€%%2\"", result4, err4)
+	}
+
+	// Bytes that are not UTF-8 are an error, as in Ruby.
+	if _, err5 := sf.URLDecode("a%FFb"); err5 == nil {
+		t.Error("Expected an error for a decoded byte sequence that is not UTF-8")
 	}
 }
 
@@ -299,14 +309,14 @@ func TestStandardFiltersSlice(t *testing.T) {
 	sf := &StandardFilters{}
 
 	t.Run("string", func(t *testing.T) {
-		got := sf.Slice("hello", 1, 3)
+		got := sliceOf(sf, "hello", 1, 3)
 		if got != "ell" {
 			t.Errorf("Slice() = %v, want 'ell'", got)
 		}
 	})
 
 	t.Run("array", func(t *testing.T) {
-		got := sf.Slice([]interface{}{1, 2, 3, 4}, 1, 2)
+		got := sliceOf(sf, []interface{}{1, 2, 3, 4}, 1, 2)
 		gotArr, ok := got.([]interface{})
 		if !ok {
 			t.Fatalf("Slice() = %T, want []interface{}", got)
@@ -319,37 +329,37 @@ func TestStandardFiltersSlice(t *testing.T) {
 		}
 	})
 
-	t.Run("string negative offset", func(t *testing.T) {
-		got := sf.Slice("hello", -1, 3)
-		if got != "" {
-			t.Errorf("Slice() with negative offset = %v, want empty string", got)
+	t.Run("string negative offset counts from the end", func(t *testing.T) {
+		got := sliceOf(sf, "hello", -1, 3)
+		if got != "o" {
+			t.Errorf("Slice() with negative offset = %v, want 'o'", got)
 		}
 	})
 
 	t.Run("string offset too large", func(t *testing.T) {
-		got := sf.Slice("hello", 10, 3)
+		got := sliceOf(sf, "hello", 10, 3)
 		if got != "" {
 			t.Errorf("Slice() with offset too large = %v, want empty string", got)
 		}
 	})
 
 	t.Run("string end exceeds length", func(t *testing.T) {
-		got := sf.Slice("hello", 1, 10)
+		got := sliceOf(sf, "hello", 1, 10)
 		if got != "ello" {
 			t.Errorf("Slice() with end exceeding length = %v, want 'ello'", got)
 		}
 	})
 
-	t.Run("array negative offset", func(t *testing.T) {
-		got := sf.Slice([]interface{}{1, 2, 3}, -1, 2)
+	t.Run("array negative offset counts from the end", func(t *testing.T) {
+		got := sliceOf(sf, []interface{}{1, 2, 3}, -1, 2)
 		gotArr, ok := got.([]interface{})
-		if !ok || len(gotArr) != 0 {
-			t.Errorf("Slice() with negative offset = %v, want empty array", got)
+		if !ok || len(gotArr) != 1 || gotArr[0] != 3 {
+			t.Errorf("Slice() with negative offset = %v, want [3]", got)
 		}
 	})
 
 	t.Run("array offset too large", func(t *testing.T) {
-		got := sf.Slice([]interface{}{1, 2, 3}, 10, 2)
+		got := sliceOf(sf, []interface{}{1, 2, 3}, 10, 2)
 		gotArr, ok := got.([]interface{})
 		if !ok || len(gotArr) != 0 {
 			t.Errorf("Slice() with offset too large = %v, want empty array", got)
@@ -357,22 +367,22 @@ func TestStandardFiltersSlice(t *testing.T) {
 	})
 
 	t.Run("array end exceeds length", func(t *testing.T) {
-		got := sf.Slice([]interface{}{1, 2, 3}, 1, 10)
+		got := sliceOf(sf, []interface{}{1, 2, 3}, 1, 10)
 		gotArr, ok := got.([]interface{})
 		if !ok || len(gotArr) != 2 {
 			t.Errorf("Slice() with end exceeding length = %v, want [2 3]", gotArr)
 		}
 	})
 
-	t.Run("non-string non-array", func(t *testing.T) {
-		got := sf.Slice(42, 1, 2)
-		if got != "" {
-			t.Errorf("Slice() with non-string non-array = %v, want empty string", got)
+	t.Run("non-string non-array is sliced as text", func(t *testing.T) {
+		got := sliceOf(sf, 42, 1, 2)
+		if got != "2" {
+			t.Errorf("Slice() with non-string non-array = %v, want '2'", got)
 		}
 	})
 
 	t.Run("nil length", func(t *testing.T) {
-		got := sf.Slice("hello", 1, nil)
+		got := sliceOf(sf, "hello", 1, nil)
 		if got != "e" {
 			t.Errorf("Slice() with nil length = %v, want 'e'", got)
 		}
@@ -407,18 +417,17 @@ func TestStandardFiltersTruncate(t *testing.T) {
 		}
 	})
 
-	t.Run("length zero or negative", func(t *testing.T) {
-		// With length 0, it defaults to 50, but "hello world" is shorter, so returns full string
+	t.Run("length zero or negative leaves the ellipsis", func(t *testing.T) {
 		result := sf.Truncate("hello world", 0, nil)
-		if result != "hello world" {
-			t.Errorf("Truncate() with length 0 = %v, want 'hello world' (string shorter than default 50)", result)
+		if result != "..." {
+			t.Errorf("Truncate() with length 0 = %v, want '...'", result)
 		}
 
-		// Test with a longer string to see default length behavior
+		// Without a length, the default is 50
 		longStr := strings.Repeat("a", 100)
-		result2 := sf.Truncate(longStr, 0, nil)
+		result2 := sf.Truncate(longStr, nil, nil)
 		if len(result2) != 50 {
-			t.Errorf("Truncate() with length 0 and long string = %v (len=%d), expected length 50", result2, len(result2))
+			t.Errorf("Truncate() without a length = %v (len=%d), expected length 50", result2, len(result2))
 		}
 	})
 
@@ -458,8 +467,8 @@ func TestStandardFiltersJoin(t *testing.T) {
 
 	t.Run("array with default separator", func(t *testing.T) {
 		result := sf.Join([]interface{}{"a", "b", "c"}, nil)
-		if result != "a, b, c" {
-			t.Errorf("Join() with nil separator = %v, want 'a, b, c'", result)
+		if result != "a b c" {
+			t.Errorf("Join() with nil separator = %v, want 'a b c'", result)
 		}
 	})
 
@@ -503,9 +512,10 @@ func TestStandardFiltersFirst(t *testing.T) {
 	})
 
 	t.Run("non-array", func(t *testing.T) {
+		// a string gives its first character, as Shopify Liquid 5.14
 		result := sf.First("not an array")
-		if result != nil {
-			t.Errorf("First() with non-array = %v, want nil", result)
+		if result != "n" {
+			t.Errorf("First() with non-array = %v, want n", result)
 		}
 	})
 
@@ -535,9 +545,10 @@ func TestStandardFiltersLast(t *testing.T) {
 	})
 
 	t.Run("non-array", func(t *testing.T) {
+		// a string gives its last character, as Shopify Liquid 5.14
 		result := sf.Last("not an array")
-		if result != nil {
-			t.Errorf("Last() with non-array = %v, want nil", result)
+		if result != "y" {
+			t.Errorf("Last() with non-array = %v, want y", result)
 		}
 	})
 
@@ -742,12 +753,12 @@ func TestAbs(t *testing.T) {
 		input    interface{}
 		expected interface{}
 	}{
-		{17, float64(17)},
-		{-17, float64(17)},
+		{17, 17},
+		{-17, 17},
 		{17.42, 17.42},
 		{-17.42, 17.42},
-		{"17", 17.0},
-		{"-17", 17.0},
+		{"17", 17},
+		{"-17", 17},
 	}
 
 	for _, tt := range tests {
@@ -762,7 +773,7 @@ func TestPlus(t *testing.T) {
 	sf := &StandardFilters{}
 
 	result := sf.Plus(1, 1)
-	if result != float64(2) {
+	if result != 2 {
 		t.Errorf("Plus(1, 1) = %v, want 2", result)
 	}
 
@@ -776,7 +787,7 @@ func TestMinus(t *testing.T) {
 	sf := &StandardFilters{}
 
 	result := sf.Minus(5, 1)
-	if result != float64(4) {
+	if result != 4 {
 		t.Errorf("Minus(5, 1) = %v, want 4", result)
 	}
 
@@ -791,7 +802,7 @@ func TestTimes(t *testing.T) {
 	sf := &StandardFilters{}
 
 	result := sf.Times(3, 4)
-	if result != float64(12) {
+	if result != 12 {
 		t.Errorf("Times(3, 4) = %v, want 12", result)
 	}
 
@@ -808,7 +819,7 @@ func TestDividedBy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DividedBy(12, 3) error = %v", err)
 	}
-	if result != float64(4) {
+	if result != 4 {
 		t.Errorf("DividedBy(12, 3) = %v, want 4", result)
 	}
 
@@ -835,7 +846,7 @@ func TestModulo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Modulo(3, 2) error = %v", err)
 	}
-	if result != float64(1) {
+	if result != 1 {
 		t.Errorf("Modulo(3, 2) = %v, want 1", result)
 	}
 
@@ -918,17 +929,17 @@ func TestAtMost(t *testing.T) {
 	sf := &StandardFilters{}
 
 	result := sf.AtMost(5, 4)
-	if result != float64(4) {
+	if result != 4 {
 		t.Errorf("AtMost(5, 4) = %v, want 4", result)
 	}
 
 	result = sf.AtMost(5, 5)
-	if result != float64(5) {
+	if result != 5 {
 		t.Errorf("AtMost(5, 5) = %v, want 5", result)
 	}
 
 	result = sf.AtMost(5, 6)
-	if result != float64(5) {
+	if result != 5 {
 		t.Errorf("AtMost(5, 6) = %v, want 5", result)
 	}
 }
@@ -937,17 +948,17 @@ func TestAtLeast(t *testing.T) {
 	sf := &StandardFilters{}
 
 	result := sf.AtLeast(5, 4)
-	if result != float64(5) {
+	if result != 5 {
 		t.Errorf("AtLeast(5, 4) = %v, want 5", result)
 	}
 
 	result = sf.AtLeast(5, 5)
-	if result != float64(5) {
+	if result != 5 {
 		t.Errorf("AtLeast(5, 5) = %v, want 5", result)
 	}
 
 	result = sf.AtLeast(5, 6)
-	if result != float64(6) {
+	if result != 6 {
 		t.Errorf("AtLeast(5, 6) = %v, want 6", result)
 	}
 }
@@ -994,7 +1005,7 @@ func TestSort(t *testing.T) {
 	sf := &StandardFilters{}
 
 	input := []interface{}{4, 3, 2, 1}
-	result := sf.Sort(input, nil)
+	result := filterValue(sf.Sort(input, nil))
 	expected := []interface{}{1, 2, 3, 4}
 
 	if arr, ok := result.([]interface{}); ok {
@@ -1017,7 +1028,7 @@ func TestSort(t *testing.T) {
 		map[string]interface{}{"a": 1},
 		map[string]interface{}{"a": 2},
 	}
-	result2 := sf.Sort(input2, "a")
+	result2 := filterValue(sf.Sort(input2, "a"))
 	if arr, ok := result2.([]interface{}); ok {
 		if len(arr) != 4 {
 			t.Fatalf("Sort() with property returned %d elements, want 4", len(arr))
@@ -1035,7 +1046,7 @@ func TestSortNatural(t *testing.T) {
 	sf := &StandardFilters{}
 
 	input := []interface{}{"c", "D", "a", "B"}
-	result := sf.SortNatural(input, nil)
+	result := filterValue(sf.SortNatural(input, nil))
 	expected := []interface{}{"a", "B", "c", "D"}
 
 	if arr, ok := result.([]interface{}); ok {
@@ -1072,7 +1083,7 @@ func TestUniq(t *testing.T) {
 	sf := &StandardFilters{}
 
 	input := []interface{}{1, 1, 3, 2, 3, 1, 4, 3, 2, 1}
-	result := sf.Uniq(input, nil)
+	result := filterValue(sf.Uniq(input, nil))
 
 	if arr, ok := result.([]interface{}); ok {
 		// Should have unique values
@@ -1088,7 +1099,7 @@ func TestCompact(t *testing.T) {
 	sf := &StandardFilters{}
 
 	input := []interface{}{1, nil, 2, nil, 3}
-	result := sf.Compact(input, nil)
+	result := filterValue(sf.Compact(input, nil))
 
 	if arr, ok := result.([]interface{}); ok {
 		if len(arr) != 3 {
@@ -1142,7 +1153,7 @@ func TestWhere(t *testing.T) {
 		map[string]interface{}{"handle": "delta", "ok": true},
 	}
 
-	result := sf.Where(input, "ok", true)
+	result := filterValue(sf.Where(input, "ok", true))
 
 	if arr, ok := result.([]interface{}); ok {
 		if len(arr) != 2 {
@@ -1163,7 +1174,7 @@ func TestReject(t *testing.T) {
 		map[string]interface{}{"handle": "delta", "ok": true},
 	}
 
-	result := sf.Reject(input, "ok", true)
+	result := filterValue(sf.Reject(input, "ok", true))
 
 	if arr, ok := result.([]interface{}); ok {
 		if len(arr) != 2 {
@@ -1184,8 +1195,8 @@ func TestHas(t *testing.T) {
 		map[string]interface{}{"handle": "delta", "ok": false},
 	}
 
-	result := sf.Has(input, "ok", true)
-	if !result {
+	result := filterValue(sf.Has(input, "ok", true))
+	if result != true {
 		t.Error("Has() = false, want true")
 	}
 
@@ -1194,8 +1205,8 @@ func TestHas(t *testing.T) {
 		map[string]interface{}{"handle": "beta", "ok": false},
 	}
 
-	result2 := sf.Has(input2, "ok", true)
-	if result2 {
+	result2 := filterValue(sf.Has(input2, "ok", true))
+	if result2 != false {
 		t.Error("Has() = true, want false")
 	}
 }
@@ -1209,7 +1220,7 @@ func TestFind(t *testing.T) {
 		map[string]interface{}{"title": "Alpine jacket", "price": 3999},
 	}
 
-	result := sf.Find(input, "price", 3999)
+	result := filterValue(sf.Find(input, "price", 3999))
 
 	if result == nil {
 		t.Fatal("Find() returned nil")
@@ -1231,7 +1242,7 @@ func TestFindIndex(t *testing.T) {
 		map[string]interface{}{"title": "Alpine jacket", "price": 3999},
 	}
 
-	result := sf.FindIndex(input, "price", 3999)
+	result := filterValue(sf.FindIndex(input, "price", 3999))
 
 	if result != 2 {
 		t.Errorf("FindIndex() = %v, want 2", result)
@@ -1274,9 +1285,9 @@ func TestSum(t *testing.T) {
 	sf := &StandardFilters{}
 
 	input := []interface{}{1, 2}
-	result := sf.Sum(input, nil)
+	result := filterValue(sf.Sum(input, nil))
 
-	if result != float64(3) {
+	if result != 3 {
 		t.Errorf("Sum([1, 2]) = %v, want 3", result)
 	}
 
@@ -1287,20 +1298,20 @@ func TestSum(t *testing.T) {
 		map[string]interface{}{"weight": 4},
 	}
 
-	result2 := sf.Sum(input2, "quantity")
-	if result2 != float64(3) {
+	result2 := filterValue(sf.Sum(input2, "quantity"))
+	if result2 != 3 {
 		t.Errorf("Sum(input, 'quantity') = %v, want 3", result2)
 	}
 
-	result3 := sf.Sum(input2, "weight")
-	if result3 != float64(7) {
+	result3 := filterValue(sf.Sum(input2, "weight"))
+	if result3 != 7 {
 		t.Errorf("Sum(input, 'weight') = %v, want 7", result3)
 	}
 }
 
 // TestStandardFiltersTypedSlices tests filters with typed slices ([]string, []int, etc.)
 func TestStandardFiltersTypedSlices(t *testing.T) {
-	env := NewEnvironment()
+	env := mustEnv(EnvironmentConfig{})
 	ctx := BuildContext(ContextConfig{Environment: env})
 	sf := &StandardFilters{context: ctx}
 
@@ -1462,7 +1473,7 @@ func TestStandardFiltersTypedSlices(t *testing.T) {
 
 // TestNewInputIteratorTypedSlices tests that InputIterator works with typed slices
 func TestNewInputIteratorTypedSlices(t *testing.T) {
-	env := NewEnvironment()
+	env := mustEnv(EnvironmentConfig{})
 	ctx := BuildContext(ContextConfig{Environment: env})
 
 	tests := []struct {
@@ -1546,4 +1557,13 @@ func TestStandardFilters_Date_WithPointerToTime(t *testing.T) {
 	if result != expected {
 		t.Errorf("Date(*time.Time) = %v, expected %v", result, expected)
 	}
+}
+
+// filterValue returns the value of a filter that returns a value and an
+// error, and fails on an error.
+func filterValue(v interface{}, err error) interface{} {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

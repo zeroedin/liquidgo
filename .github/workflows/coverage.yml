@@ -17,10 +17,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.4'
+          go-version-file: go.mod
 
+      # The library is covered by its own tests and by the integration tests,
+      # which render through its public API: both count.
       - name: Run tests with coverage
-        run: go test -coverprofile=coverage.out ./liquid/...
+        run: go test -coverpkg=./liquid/... -coverprofile=coverage.out ./liquid/... ./integration
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5

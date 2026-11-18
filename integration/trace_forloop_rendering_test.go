@@ -3,13 +3,12 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 func TestTraceForloopRendering(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	// Test direct variable lookup in context
 	ctx := liquid.BuildContext(liquid.ContextConfig{Environment: env})
@@ -40,7 +39,7 @@ func TestTraceForloopRendering(t *testing.T) {
 	}
 
 	vars := map[string]interface{}{"forloop": drop}
-	got := tmpl.Render(vars, nil)
+	got := renderRuby(tmpl, vars, nil)
 	t.Logf("Template render result = %q", got)
 
 	if got == "" {

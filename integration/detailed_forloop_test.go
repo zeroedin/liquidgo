@@ -3,8 +3,8 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 func TestForloopLastDetailed(t *testing.T) {
@@ -42,8 +42,7 @@ func TestForloopLastDetailed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := liquid.NewEnvironment()
-			tags.RegisterStandardTags(env)
+			env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 			tmpl := liquid.NewTemplate(&liquid.TemplateOptions{Environment: env})
 
 			err := tmpl.Parse(tt.template, nil)
@@ -52,7 +51,7 @@ func TestForloopLastDetailed(t *testing.T) {
 			}
 
 			vars := map[string]interface{}{"items": []interface{}{1, 2, 3}}
-			got := tmpl.Render(vars, nil)
+			got := renderRuby(tmpl, vars, nil)
 
 			if got != tt.want {
 				t.Errorf("FAILED\nWant: %q\nGot:  %q", tt.want, got)

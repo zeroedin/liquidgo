@@ -45,8 +45,7 @@ func TestParseContextParseExpressionSafe(t *testing.T) {
 }
 
 func TestParseContextWithOptions(t *testing.T) {
-	env := NewEnvironment()
-	env.SetErrorMode("strict")
+	env := mustEnv(EnvironmentConfig{ErrorMode: "strict"})
 	locale := NewI18n("en")
 
 	pc := NewParseContext(ParseContextOptions{
@@ -262,44 +261,5 @@ func TestParseContextPartialOptionsSetToFalse(t *testing.T) {
 	// Error mode should reset to environment default
 	if pc.ErrorMode() != pc.Environment().ErrorMode() {
 		t.Error("Expected error mode to reset to environment default")
-	}
-}
-
-func TestParseContextSafeParseExpressionStrictMode(t *testing.T) {
-	pc := NewParseContext(ParseContextOptions{ErrorMode: "strict"})
-	parser := pc.NewParser("invalid+++")
-
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic in strict mode for invalid expression")
-			}
-		}()
-		pc.SafeParseCompleteExpression(parser)
-	}()
-}
-
-func TestParseContextSafeParseExpressionRigidMode(t *testing.T) {
-	pc := NewParseContext(ParseContextOptions{ErrorMode: "rigid"})
-	parser := pc.NewParser("invalid+++")
-
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic in rigid mode for invalid expression")
-			}
-		}()
-		pc.SafeParseCompleteExpression(parser)
-	}()
-}
-
-func TestParseContextSafeParseExpressionLaxMode(t *testing.T) {
-	pc := NewParseContext(ParseContextOptions{ErrorMode: "lax"})
-	parser := pc.NewParser("invalid+++")
-
-	// Should not panic in lax mode
-	result := pc.SafeParseCompleteExpression(parser)
-	if result != nil {
-		t.Errorf("Expected nil result in lax mode for invalid expression, got %v", result)
 	}
 }

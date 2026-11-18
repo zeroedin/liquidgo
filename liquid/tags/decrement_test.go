@@ -3,12 +3,15 @@ package tags
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 func TestDecrementTag(t *testing.T) {
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{})
-	tag := NewDecrementTag("decrement", "counter", pc)
+	tag, err := NewDecrementTag("decrement", "counter", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if tag == nil {
 		t.Fatal("Expected DecrementTag, got nil")
 	}
@@ -21,14 +24,14 @@ func TestDecrementTag(t *testing.T) {
 	var output string
 
 	// First call should output -1
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	if output != "-1" {
 		t.Errorf("Expected '-1', got %q", output)
 	}
 
 	// Second call should output -2
 	output = ""
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	if output != "-2" {
 		t.Errorf("Expected '-2', got %q", output)
 	}
@@ -37,14 +40,17 @@ func TestDecrementTag(t *testing.T) {
 // TestDecrementTagRenderToOutputBufferEdgeCases tests RenderToOutputBuffer edge cases
 func TestDecrementTagRenderToOutputBufferEdgeCases(t *testing.T) {
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{})
-	tag := NewDecrementTag("decrement", "counter", pc)
+	tag, err := NewDecrementTag("decrement", "counter", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := liquid.NewContext()
 
 	// Test with empty scopes (should initialize)
 	ctx.Scopes() // Ensure scopes exist
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should output -1 on first call
 	if output != "-1" {
@@ -54,7 +60,7 @@ func TestDecrementTagRenderToOutputBufferEdgeCases(t *testing.T) {
 	// Test multiple decrements
 	for i := 2; i <= 5; i++ {
 		output = ""
-		tag.RenderToOutputBuffer(ctx, &output)
+		renderToString(tag, ctx, &output)
 		expected := liquid.ToS(-i, nil)
 		if output != expected {
 			t.Errorf("Expected %q on call %d, got %q", expected, i, output)

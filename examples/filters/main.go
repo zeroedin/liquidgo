@@ -1,35 +1,36 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
-// MyFilters provides custom filter methods for templates.
-type MyFilters struct{}
-
-// Reverse reverses the input string.
-func (f *MyFilters) Reverse(input string) string {
-	runes := []rune(input)
+// reverse reverses the input string.
+func reverse(_ *liquid.Context, input interface{}, _ ...interface{}) (interface{}, error) {
+	runes := []rune(fmt.Sprint(input))
 	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
 		runes[i], runes[j] = runes[j], runes[i]
 	}
-	return string(runes)
+	return string(runes), nil
 }
 
-// Shout converts the input string to uppercase and appends exclamation marks.
-func (f *MyFilters) Shout(input string) string {
-	return strings.ToUpper(input) + "!!!"
+// shout converts the input string to uppercase and appends exclamation marks.
+func shout(_ *liquid.Context, input interface{}, _ ...interface{}) (interface{}, error) {
+	return strings.ToUpper(fmt.Sprint(input)) + "!!!", nil
 }
 
 func main() {
-	// Create environment with standard tags and custom filters
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	if err := env.RegisterFilter(&MyFilters{}); err != nil {
+	// Create environment with standard tags and custom filters: reverse
+	// takes the place of the standard reverse
+	env, err := liquid.NewEnvironment(liquid.EnvironmentConfig{
+		Tags:    tags.Standard(),
+		Filters: []liquid.FilterDef{liquid.Filter("reverse", reverse), liquid.Filter("shout", shout)},
+	})
+	if err != nil {
 		panic(err)
 	}
 
@@ -48,9 +49,12 @@ Combined: {{ text | reverse | shout }}
 		panic(err)
 	}
 
-	output := tmpl.Render(map[string]interface{}{
+	res, err := tmpl.Render(context.Background(), map[string]interface{}{
 		"text": "hello",
-	}, nil)
+	})
+	if err != nil {
+		panic(err)
+	}
 
-	fmt.Println(output)
+	fmt.Println(res.Output)
 }

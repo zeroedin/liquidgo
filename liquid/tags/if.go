@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var (
@@ -33,7 +33,7 @@ func NewIfTag(tagName, markup string, parseContext liquid.ParseContextInterface)
 	condition, err := parseIfCondition(markup, parseContext)
 	if err != nil {
 		// In warn mode, we add warning and continue with a dummy condition
-		if parseContext.ErrorMode() == "warn" {
+		if parseContext.ErrorMode() == liquid.ErrorModeWarn {
 			parseContext.AddWarning(err)
 			// Use a condition that evaluates to false
 			condition = liquid.NewCondition(nil, "", nil)
@@ -147,9 +147,9 @@ func (i *IfTag) parseBodyForBlock(tokenizer *liquid.Tokenizer, condition Conditi
 
 		// Handle elsif and else (Ruby: unknown_tag handles these)
 		if endTagName == "elsif" || endTagName == "else" {
-			err := i.pushBlock(endTagName, endTagMarkup)
-			if err != nil {
-				return false
+			// An elsif that does not parse is a syntax error, as an if
+			if err := i.pushBlock(endTagName, endTagMarkup); err != nil {
+				panic(err)
 			}
 			// New block created - Parse() will detect this and continue
 			return false // Stop parsing current block
@@ -199,37 +199,22 @@ func (i *IfTag) pushBlock(tagName, markup string) error {
 	return nil
 }
 
-// RenderToOutputBuffer renders the if tag.
-func (i *IfTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the if tag.
+func (i *IfTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	// Get the underlying Context which implements ConditionContext
 	ctx := context.Context().(*liquid.Context)
-
-	// Track render depth for nested blocks
-	ctx.IncrementRenderDepth()
-	defer ctx.DecrementRenderDepth()
 
 	for _, block := range i.blocks {
 		result, err := block.Evaluate(ctx)
 		if err != nil {
-			// Handle error
-			// If the tag is blank (produces no output), suppress the error from output
-			// This matches Ruby Liquid's behavior for blank nodes
-			if i.Blank() {
-				return
-			}
-			errorMsg := context.HandleError(err, i.LineNumber())
-			*output += errorMsg
-			return
+			liquid.Raise(err) // as Ruby: the block body handles it
 		}
 
-		// Convert result to liquid value
-		resultVal := liquid.ToLiquidValue(result)
-
-		// Check if condition is true
-		if resultVal != nil && resultVal != false && resultVal != "" {
+		// The condition holds: result is its truth
+		if result {
 			// Render the attachment
 			if attachment, ok := block.Attachment().(*liquid.BlockBody); ok {
-				attachment.RenderToOutputBuffer(context, output)
+				attachment.RenderToOutput(context, output)
 			}
 			return
 		}
@@ -253,12 +238,19 @@ func (i *IfTag) Blank() bool {
 func parseIfCondition(markup string, parseContext liquid.ParseContextInterface) (*liquid.Condition, error) {
 	markup = strings.TrimSpace(markup)
 
+	// In strict mode, the whole markup is lexed first, as Ruby's strict
+	// parse, so that a character the lexer refuses is a syntax error that
+	// names the whole condition.
+	if err := lexCondition(markup, parseContext); err != nil {
+		return nil, err
+	}
+
 	// Split by 'and' and 'or' operators, keeping track of which operator was used
 	// We need to parse from right to left like Ruby does
-	parts := splitByBooleanOperators(markup)
+	parts, ok := splitByBooleanOperators(markup)
 
-	if len(parts) == 0 {
-		return nil, liquid.NewSyntaxError("Syntax Error in 'if' - Valid syntax: if [expression]")
+	if !ok || len(parts) == 0 {
+		return nil, liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.if", nil)
 	}
 
 	// Parse the rightmost condition first
@@ -293,49 +285,94 @@ type conditionPart struct {
 	nextOp string // "and" or "or" - the operator that follows this expression
 }
 
-// splitByBooleanOperators splits markup by 'and' and 'or' operators
-func splitByBooleanOperators(markup string) []conditionPart {
+// splitByBooleanOperators splits markup on the and/or operators, as Ruby's
+// If::ExpressionsAndOperators: an operator is a bare "and" or "or" word that starts a
+// fragment, and a quoted string is part of its fragment, spaces and operators included.
+// Each expression is kept as written.
+func splitByBooleanOperators(markup string) ([]conditionPart, bool) {
 	var parts []conditionPart
-	var currentExpr strings.Builder
-	words := strings.Fields(markup)
-
-	for i := 0; i < len(words); i++ {
-		word := words[i]
-		// Check if word is a boolean operator
-		isBoolOp := false
-		for _, op := range ifBooleanOperators {
-			if word == op {
-				isBoolOp = true
-				break
-			}
+	start, end := -1, 0
+	for i := 0; i < len(markup); {
+		if isConditionSpace(markup[i]) {
+			i++
+			continue
 		}
+		if op := booleanOperatorAt(markup, i); op != "" {
+			// an operator with no expression before it is a syntax error,
+			// as in Ruby's parse
+			if start < 0 {
+				return nil, false
+			}
+			parts = append(parts, conditionPart{expr: markup[start:end], nextOp: op})
+			start = -1
+			i += len(op)
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+		i = conditionFragmentEnd(markup, i)
+		end = i
+	}
+	if start >= 0 {
+		parts = append(parts, conditionPart{expr: markup[start:end]})
+	} else if len(parts) > 0 {
+		return nil, false // an operator with no expression after it
+	}
+	return parts, true
+}
 
-		if isBoolOp {
-			// Found an operator
-			if currentExpr.Len() > 0 {
-				parts = append(parts, conditionPart{
-					expr:   strings.TrimSpace(currentExpr.String()),
-					nextOp: word,
-				})
-				currentExpr.Reset()
-			}
-		} else {
-			if currentExpr.Len() > 0 {
-				currentExpr.WriteString(" ")
-			}
-			currentExpr.WriteString(word)
+// booleanOperatorAt returns "and" or "or" when that whole word starts at markup[i].
+func booleanOperatorAt(markup string, i int) string {
+	for _, op := range ifBooleanOperators {
+		j := i + len(op)
+		if strings.HasPrefix(markup[i:], op) &&
+			(i == 0 || !isConditionWordChar(markup[i-1])) &&
+			(j == len(markup) || !isConditionWordChar(markup[j])) {
+			return op
 		}
 	}
+	return ""
+}
 
-	// Add the last expression
-	if currentExpr.Len() > 0 {
-		parts = append(parts, conditionPart{
-			expr:   strings.TrimSpace(currentExpr.String()),
-			nextOp: "",
-		})
+// conditionFragmentEnd returns the end of the fragment starting at markup[i]: up to the
+// next space, a closed quoted string counting as one piece.
+func conditionFragmentEnd(markup string, i int) int {
+	for i < len(markup) && !isConditionSpace(markup[i]) {
+		if c := markup[i]; c == '"' || c == '\'' {
+			if j := strings.IndexByte(markup[i+1:], c); j >= 0 {
+				i += j + 2
+				continue
+			}
+		}
+		i++
 	}
+	return i
+}
 
-	return parts
+// withoutQuotedStrings returns expr with its closed quoted strings removed, to look for
+// syntax characters (|, parentheses) outside of them.
+func withoutQuotedStrings(expr string) string {
+	var b strings.Builder
+	for i := 0; i < len(expr); {
+		if c := expr[i]; c == '"' || c == '\'' {
+			if j := strings.IndexByte(expr[i+1:], c); j >= 0 {
+				i += j + 2
+				continue
+			}
+		}
+		b.WriteByte(expr[i])
+		i++
+	}
+	return b.String()
+}
+
+func isConditionSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'
+}
+
+func isConditionWordChar(c byte) bool {
+	return c == '_' || c >= 0x80 || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // parseSingleCondition parses a single condition (without and/or)
@@ -343,7 +380,7 @@ func parseSingleCondition(expr string, parseContext liquid.ParseContextInterface
 	// Check if expression contains filter syntax (pipe character)
 	// If so, treat entire expression as a simple expression (don't split by operators)
 	// This allows filters in conditions like: {% if posts | has: 'author', 'Alice' %}
-	if strings.Contains(expr, "|") {
+	if strings.Contains(withoutQuotedStrings(expr), "|") {
 		parsedExpr := liquid.ParseConditionExpression(parseContext, expr, false)
 		return liquid.NewCondition(parsedExpr, "", nil), nil
 	}
@@ -354,10 +391,9 @@ func parseSingleCondition(expr string, parseContext liquid.ParseContextInterface
 		if err := validateExpression(expr, parseContext); err != nil {
 			return nil, err
 		}
-
-		// Try as simple expression - use ParseConditionExpression to support filters
-		parsedExpr := liquid.ParseConditionExpression(parseContext, expr, false)
-		return liquid.NewCondition(parsedExpr, "", nil), nil
+		// An expression without a value, such as a lone quote, is Ruby's
+		// lax syntax error: expressions.pop =~ Syntax fails.
+		return nil, liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.if", nil)
 	}
 
 	// Validate left expression syntax
@@ -379,8 +415,8 @@ func parseSingleCondition(expr string, parseContext liquid.ParseContextInterface
 
 		if !valid {
 			// Check if we are in strict mode
-			if pc, ok := parseContext.(interface{ ErrorMode() string }); ok {
-				if pc.ErrorMode() == "strict" {
+			if pc, ok := parseContext.(interface{ ErrorMode() liquid.ErrorMode }); ok {
+				if pc.ErrorMode() == liquid.ErrorModeStrict {
 					return nil, liquid.NewSyntaxError("Unexpected character = in \"" + matches[0] + "\"")
 				}
 			}
@@ -401,25 +437,48 @@ func parseSingleCondition(expr string, parseContext liquid.ParseContextInterface
 	return liquid.NewCondition(left, operator, right), nil
 }
 
-func validateExpression(expr string, parseContext liquid.ParseContextInterface) error {
-	mode := parseContext.ErrorMode()
-	if mode == "strict" || mode == "warn" {
-		// Check for parentheses which are not allowed in Liquid conditions
-		if strings.Contains(expr, "(") || strings.Contains(expr, ")") {
-			return liquid.NewSyntaxError("Liquid syntax error: parentheses are not allowed in Liquid conditions")
-		}
-
-		p := parseContext.NewParser(expr)
-		if err := p.Error(); err != nil {
-			if syntaxErr, ok := err.(*liquid.SyntaxError); ok {
-				syntaxErr.Err.MarkupContext = "in \"" + expr + "\""
-				if parseContext.LineNumber() != nil {
-					ln := *parseContext.LineNumber()
-					syntaxErr.Err.LineNumber = &ln
-				}
-			}
-			return err
+// lexCondition returns the lexer's syntax error for the markup of a tag in
+// strict, strict2 or rigid mode, with the markup as its context.
+func lexCondition(markup string, parseContext liquid.ParseContextInterface) error {
+	switch parseContext.ErrorMode() {
+	case liquid.ErrorModeStrict, liquid.ErrorModeStrict2, liquid.ErrorModeRigid:
+	default:
+		return nil
+	}
+	err := parseContext.NewParser(markup).Error()
+	if syntaxErr, ok := err.(*liquid.SyntaxError); ok {
+		syntaxErr.Err.MarkupContext = "in \"" + markup + "\""
+		if parseContext.LineNumber() != nil {
+			ln := *parseContext.LineNumber()
+			syntaxErr.Err.LineNumber = &ln
 		}
 	}
-	return nil
+	return err
+}
+
+func validateExpression(expr string, parseContext liquid.ParseContextInterface) error {
+	switch parseContext.ErrorMode() {
+	case liquid.ErrorModeStrict, liquid.ErrorModeWarn, liquid.ErrorModeRigid, liquid.ErrorModeStrict2:
+	default:
+		return nil
+	}
+	// as Ruby's strict and strict2 parses: each operand is one expression of
+	// the parser, a range included ((1..3)); strict2's parser also refuses a
+	// bare bracket
+	p := parseContext.NewParser(expr)
+	err := p.Error()
+	if err == nil {
+		_, err = p.Expression()
+	}
+	if err == nil {
+		_, err = p.Consume(":end_of_string")
+	}
+	if syntaxErr, ok := err.(*liquid.SyntaxError); ok {
+		syntaxErr.Err.MarkupContext = "in \"" + expr + "\""
+		if parseContext.LineNumber() != nil {
+			ln := *parseContext.LineNumber()
+			syntaxErr.Err.LineNumber = &ln
+		}
+	}
+	return err
 }

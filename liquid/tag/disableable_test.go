@@ -1,10 +1,11 @@
 package tag
 
 import (
+	gocontext "context"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // CustomTag is a simple tag that renders its tag name.
@@ -14,15 +15,15 @@ type CustomTag struct {
 	Disableable
 }
 
-func NewCustomTag(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
+func NewCustomTag(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
 	return &CustomTag{
 		Tag:         liquid.NewTag(tagName, markup, parseContext),
 		Disableable: Disableable{},
 	}, nil
 }
 
-func (c *CustomTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
-	c.Disableable.RenderToOutputBuffer(
+func (c *CustomTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
+	c.Render(
 		c.TagName(),
 		context,
 		c.LineNumber(),
@@ -30,7 +31,7 @@ func (c *CustomTag) RenderToOutputBuffer(context liquid.TagContext, output *stri
 		output,
 		func() {
 			// Render tag name
-			*output += c.TagName()
+			output.WriteString(c.TagName())
 		},
 	)
 }
@@ -42,15 +43,15 @@ type Custom2Tag struct {
 	Disableable
 }
 
-func NewCustom2Tag(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
+func NewCustom2Tag(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
 	return &Custom2Tag{
 		Tag:         liquid.NewTag(tagName, markup, parseContext),
 		Disableable: Disableable{},
 	}, nil
 }
 
-func (c *Custom2Tag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
-	c.Disableable.RenderToOutputBuffer(
+func (c *Custom2Tag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
+	c.Render(
 		c.TagName(),
 		context,
 		c.LineNumber(),
@@ -58,7 +59,7 @@ func (c *Custom2Tag) RenderToOutputBuffer(context liquid.TagContext, output *str
 		output,
 		func() {
 			// Render tag name
-			*output += c.TagName()
+			output.WriteString(c.TagName())
 		},
 	)
 }
@@ -70,23 +71,22 @@ type DisableCustomBlock struct {
 	Disabler
 }
 
-func NewDisableCustomBlock(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
+func NewDisableCustomBlock(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
 	return &DisableCustomBlock{
 		Block:    liquid.NewBlock(tagName, markup, parseContext),
 		Disabler: Disabler{},
 	}, nil
 }
 
-func (d *DisableCustomBlock) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+func (d *DisableCustomBlock) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	disabledTags := []string{"custom"}
-	d.Disabler.RenderToOutputBuffer(
+	d.Render(
 		disabledTags,
 		context,
-		output,
 		func() {
 			// Render block body
 			if d.Block != nil {
-				d.Block.RenderToOutputBuffer(context, output)
+				d.Block.RenderToOutput(context, output)
 			}
 		},
 	)
@@ -99,23 +99,22 @@ type DisableBothBlock struct {
 	Disabler
 }
 
-func NewDisableBothBlock(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
+func NewDisableBothBlock(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
 	return &DisableBothBlock{
 		Block:    liquid.NewBlock(tagName, markup, parseContext),
 		Disabler: Disabler{},
 	}, nil
 }
 
-func (d *DisableBothBlock) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+func (d *DisableBothBlock) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	disabledTags := []string{"custom", "custom2"}
-	d.Disabler.RenderToOutputBuffer(
+	d.Render(
 		disabledTags,
 		context,
-		output,
 		func() {
 			// Render block body
 			if d.Block != nil {
-				d.Block.RenderToOutputBuffer(context, output)
+				d.Block.RenderToOutput(context, output)
 			}
 		},
 	)
@@ -123,13 +122,13 @@ func (d *DisableBothBlock) RenderToOutputBuffer(context liquid.TagContext, outpu
 
 func TestBlockTagDisablingNestedTag(t *testing.T) {
 	// Create environment
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
 
 	// Register custom tags
-	env.RegisterTag("custom", tags.TagConstructor(NewCustomTag))
-	env.RegisterTag("custom2", tags.TagConstructor(NewCustom2Tag))
-	env.RegisterTag("disable", tags.TagConstructor(NewDisableCustomBlock))
+	envTags := tags.Standard()
+	envTags["custom"] = tags.TagConstructor(NewCustomTag)
+	envTags["custom2"] = tags.TagConstructor(NewCustom2Tag)
+	envTags["disable"] = tags.TagConstructor(NewDisableCustomBlock)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: envTags})
 
 	// Parse template
 	templateOptions := &liquid.TemplateOptions{
@@ -143,13 +142,8 @@ func TestBlockTagDisablingNestedTag(t *testing.T) {
 	}
 
 	// Render template
-	contextConfig := liquid.ContextConfig{
-		Environment: env,
-	}
-	ctx := liquid.BuildContext(contextConfig)
-
-	var output string
-	tmpl.RenderToOutputBuffer(ctx, &output)
+	res, _ := tmpl.Render(gocontext.Background(), nil)
+	output := res.Output
 
 	// Expected: "Liquid error (line 1): custom usage is not allowed in this context;custom2"
 	expected := "Liquid error (line 1): custom usage is not allowed in this context;custom2"
@@ -160,13 +154,13 @@ func TestBlockTagDisablingNestedTag(t *testing.T) {
 
 func TestBlockTagDisablingMultipleNestedTags(t *testing.T) {
 	// Create environment
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
 
 	// Register custom tags
-	env.RegisterTag("custom", tags.TagConstructor(NewCustomTag))
-	env.RegisterTag("custom2", tags.TagConstructor(NewCustom2Tag))
-	env.RegisterTag("disable", tags.TagConstructor(NewDisableBothBlock))
+	envTags := tags.Standard()
+	envTags["custom"] = tags.TagConstructor(NewCustomTag)
+	envTags["custom2"] = tags.TagConstructor(NewCustom2Tag)
+	envTags["disable"] = tags.TagConstructor(NewDisableBothBlock)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: envTags})
 
 	// Parse template
 	templateOptions := &liquid.TemplateOptions{
@@ -180,13 +174,8 @@ func TestBlockTagDisablingMultipleNestedTags(t *testing.T) {
 	}
 
 	// Render template
-	contextConfig := liquid.ContextConfig{
-		Environment: env,
-	}
-	ctx := liquid.BuildContext(contextConfig)
-
-	var output string
-	tmpl.RenderToOutputBuffer(ctx, &output)
+	res, _ := tmpl.Render(gocontext.Background(), nil)
+	output := res.Output
 
 	// Expected: "Liquid error (line 1): custom usage is not allowed in this context;Liquid error (line 1): custom2 usage is not allowed in this context"
 	expected := "Liquid error (line 1): custom usage is not allowed in this context;Liquid error (line 1): custom2 usage is not allowed in this context"

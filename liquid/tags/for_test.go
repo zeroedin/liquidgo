@@ -1,9 +1,10 @@
 package tags
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 func TestForTag(t *testing.T) {
@@ -38,7 +39,7 @@ func TestForTagSimpleLoop(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("array", []interface{}{1, 2, 3})
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	if output != "1 2 3 " {
 		t.Errorf("Expected output '1 2 3 ', got %q", output)
@@ -62,7 +63,7 @@ func TestForTagEmptyCollection(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("array", []interface{}{})
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	if output != "empty" {
 		t.Errorf("Expected output 'empty', got %q", output)
@@ -86,7 +87,7 @@ func TestForTagReversed(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("array", []interface{}{1, 2, 3})
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	if output != "3 2 1 " {
 		t.Errorf("Expected output '3 2 1 ', got %q", output)
@@ -110,7 +111,7 @@ func TestForTagWithLimit(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("array", []interface{}{1, 2, 3, 4, 5})
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	if output != "1 2 " {
 		t.Errorf("Expected output '1 2 ', got %q", output)
@@ -134,7 +135,7 @@ func TestForTagWithOffset(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("array", []interface{}{1, 2, 3, 4, 5})
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	if output != "3 4 " {
 		t.Errorf("Expected output '3 4 ', got %q", output)
@@ -238,16 +239,16 @@ func TestForTagCollectionSegment(t *testing.T) {
 
 	// Test collectionSegment with simple array
 	segment := tag.collectionSegment(ctx)
-	if len(segment) != 3 {
-		t.Errorf("Expected segment length 3, got %d", len(segment))
+	if segment.Len() != 3 {
+		t.Errorf("Expected segment length 3, got %d", segment.Len())
 	}
 
 	// Test with nil collection
 	ctx2 := liquid.NewContext()
 	ctx2.Set("array", nil)
 	segment2 := tag.collectionSegment(ctx2)
-	if len(segment2) != 0 {
-		t.Errorf("Expected empty segment for nil collection, got %d", len(segment2))
+	if segment2.Len() != 0 {
+		t.Errorf("Expected empty segment for nil collection, got %d", segment2.Len())
 	}
 
 	// Test with offset:continue
@@ -266,8 +267,8 @@ func TestForTagCollectionSegment(t *testing.T) {
 	ctx4 := liquid.NewContext()
 	ctx4.Set("array", []interface{}{1, 2, 3, 4, 5})
 	segment4 := tag4.collectionSegment(ctx4)
-	if len(segment4) != 2 {
-		t.Errorf("Expected segment length 2 with limit, got %d", len(segment4))
+	if segment4.Len() != 2 {
+		t.Errorf("Expected segment length 2 with limit, got %d", segment4.Len())
 	}
 }
 
@@ -291,7 +292,7 @@ func TestForTagRenderSegment(t *testing.T) {
 
 	// Test renderSegment
 	segment := []interface{}{1, 2, 3}
-	tag.renderSegment(ctx, &output, segment)
+	output = renderSegmentForTest(tag, ctx, segment)
 	expected := "1 2 3 "
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
@@ -462,10 +463,15 @@ func TestForTagParseBodyWithUnknownTag(t *testing.T) {
 	body := liquid.NewBlockBody()
 	tokenizer := pc.NewTokenizer("content {% unknown_tag %}more{% endfor %}", false, nil, false)
 
-	shouldContinue, err := tag.parseBody(tokenizer, body)
-	// Unknown tags might cause errors, which is acceptable
-	_ = shouldContinue
-	_ = err
+	// As Ruby's unknown_tag, an unknown tag is a syntax error
+	defer func() {
+		r := recover()
+		if err, ok := r.(*liquid.SyntaxError); !ok || !strings.Contains(err.Error(), "Unknown tag 'unknown_tag'") {
+			t.Errorf("an unknown tag raised %v, want Unknown tag 'unknown_tag'", r)
+		}
+	}()
+	_, _ = tag.parseBody(tokenizer, body)
+	t.Error("an unknown tag did not raise")
 }
 
 // Test collectionSegment with invalid offsets map type
@@ -485,8 +491,8 @@ func TestForTagCollectionSegmentInvalidOffsetsMap(t *testing.T) {
 
 	segment := tag.collectionSegment(ctx)
 	// Should handle gracefully and create new map
-	if len(segment) != 3 {
-		t.Errorf("Expected segment length 3, got %d", len(segment))
+	if segment.Len() != 3 {
+		t.Errorf("Expected segment length 3, got %d", segment.Len())
 	}
 }
 
@@ -508,8 +514,8 @@ func TestForTagCollectionSegmentContinueWithNonInt(t *testing.T) {
 
 	segment := tag.collectionSegment(ctx)
 	// Should start from 0 when offset is not an int
-	if len(segment) != 3 {
-		t.Errorf("Expected segment length 3, got %d", len(segment))
+	if segment.Len() != 3 {
+		t.Errorf("Expected segment length 3, got %d", segment.Len())
 	}
 }
 
@@ -528,8 +534,8 @@ func TestForTagCollectionSegmentWithNilFromValue(t *testing.T) {
 
 	segment := tag.collectionSegment(ctx)
 	// Should default to from = 0
-	if len(segment) != 3 {
-		t.Errorf("Expected segment length 3, got %d", len(segment))
+	if segment.Len() != 3 {
+		t.Errorf("Expected segment length 3, got %d", segment.Len())
 	}
 }
 
@@ -545,11 +551,15 @@ func TestForTagCollectionSegmentWithInvalidFromValue(t *testing.T) {
 	ctx.Set("array", []interface{}{1, 2, 3})
 	ctx.Set("invalid_var", map[string]interface{}{"not": "an_int"})
 
-	segment := tag.collectionSegment(ctx)
-	// Should default to from = 0 when ToInteger fails
-	if len(segment) != 3 {
-		t.Errorf("Expected segment length 3, got %d", len(segment))
-	}
+	// As Ruby's Utils.to_integer: invalid integer (differential case tags-17)
+	defer func() {
+		err, _ := recover().(*liquid.ArgumentError)
+		if err == nil || !strings.Contains(err.Error(), "invalid integer") {
+			t.Errorf("Expected an invalid integer error, got %v", err)
+		}
+	}()
+	tag.collectionSegment(ctx)
+	t.Error("Expected collectionSegment to raise")
 }
 
 // Test collectionSegment with Range collection
@@ -566,8 +576,8 @@ func TestForTagCollectionSegmentWithRange(t *testing.T) {
 
 	segment := tag.collectionSegment(ctx)
 	// Should convert range to array [1, 2, 3, 4, 5]
-	if len(segment) != 5 {
-		t.Errorf("Expected segment length 5, got %d", len(segment))
+	if segment.Len() != 5 {
+		t.Errorf("Expected segment length 5, got %d", segment.Len())
 	}
 }
 
@@ -585,8 +595,8 @@ func TestForTagCollectionSegmentWithNilLimitValue(t *testing.T) {
 
 	segment := tag.collectionSegment(ctx)
 	// Should use all items when limit is nil
-	if len(segment) != 5 {
-		t.Errorf("Expected segment length 5, got %d", len(segment))
+	if segment.Len() != 5 {
+		t.Errorf("Expected segment length 5, got %d", segment.Len())
 	}
 }
 
@@ -602,11 +612,15 @@ func TestForTagCollectionSegmentWithInvalidLimitValue(t *testing.T) {
 	ctx.Set("array", []interface{}{1, 2, 3, 4, 5})
 	ctx.Set("invalid_var", map[string]interface{}{"not": "an_int"})
 
-	segment := tag.collectionSegment(ctx)
-	// Should use all items when ToInteger fails
-	if len(segment) != 5 {
-		t.Errorf("Expected segment length 5, got %d", len(segment))
-	}
+	// As Ruby's Utils.to_integer: invalid integer (differential case tags-17)
+	defer func() {
+		err, _ := recover().(*liquid.ArgumentError)
+		if err == nil || !strings.Contains(err.Error(), "invalid integer") {
+			t.Errorf("Expected an invalid integer error, got %v", err)
+		}
+	}()
+	tag.collectionSegment(ctx)
+	t.Error("Expected collectionSegment to raise")
 }
 
 // Test renderSegment with invalid for_stack type
@@ -633,7 +647,7 @@ func TestForTagRenderSegmentInvalidForStack(t *testing.T) {
 
 	var output string
 	segment := []interface{}{1, 2, 3}
-	tag.renderSegment(ctx, &output, segment)
+	output = renderSegmentForTest(tag, ctx, segment)
 	// Should handle gracefully and create new stack
 	expected := "1 2 3 "
 	if output != expected {
@@ -667,7 +681,7 @@ func TestForTagRenderSegmentWithParentLoop(t *testing.T) {
 
 	var output string
 	segment := []interface{}{1, 2, 3}
-	tag.renderSegment(ctx, &output, segment)
+	output = renderSegmentForTest(tag, ctx, segment)
 	// Should use parent loop
 	expected := "1 2 3 "
 	if output != expected {
@@ -685,8 +699,7 @@ func TestForTagRenderSegmentWithParentLoop(t *testing.T) {
 
 // Test renderSegment with break interrupt
 func TestForTagRenderSegmentWithBreakInterrupt(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 	tag, err := NewForTag("for", "item in array", pc)
 	if err != nil {
@@ -705,7 +718,7 @@ func TestForTagRenderSegmentWithBreakInterrupt(t *testing.T) {
 
 	var output string
 	segment := []interface{}{1, 2, 3}
-	tag.renderSegment(ctx, &output, segment)
+	output = renderSegmentForTest(tag, ctx, segment)
 	// Should break after rendering item 2 and detecting break in if statement
 	// Output: "1 " (item 1 + space) + "2" (item 2, then break before space)
 	expected := "1 2"
@@ -716,8 +729,7 @@ func TestForTagRenderSegmentWithBreakInterrupt(t *testing.T) {
 
 // Test renderSegment with continue interrupt
 func TestForTagRenderSegmentWithContinueInterrupt(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 	tag, err := NewForTag("for", "item in array", pc)
 	if err != nil {
@@ -736,7 +748,7 @@ func TestForTagRenderSegmentWithContinueInterrupt(t *testing.T) {
 
 	var output string
 	segment := []interface{}{1, 2, 3}
-	tag.renderSegment(ctx, &output, segment)
+	output = renderSegmentForTest(tag, ctx, segment)
 	// Should skip item 2, output should contain "1" and "3" but not "2"
 	expected := "1 3 "
 	if output != expected {
@@ -766,9 +778,8 @@ func TestForTagRenderSegmentStackPopping(t *testing.T) {
 	initialStack := []*liquid.ForloopDrop{}
 	registers.Set("for_stack", initialStack)
 
-	var output string
 	segment := []interface{}{1, 2}
-	tag.renderSegment(ctx, &output, segment)
+	_ = renderSegmentForTest(tag, ctx, segment)
 
 	// Verify stack was popped back to initial state
 	finalStack := registers.Get("for_stack")
@@ -777,4 +788,11 @@ func TestForTagRenderSegmentStackPopping(t *testing.T) {
 			t.Errorf("Expected empty stack after render, got length %d", len(stack))
 		}
 	}
+}
+
+// renderSegmentForTest renders the loop over segment, as RenderToOutput does.
+func renderSegmentForTest(tag *ForTag, ctx *liquid.Context, items []interface{}) string {
+	buf := liquid.NewOutputBuffer()
+	tag.renderSegment(ctx, buf, segment{items: items, length: len(items)})
+	return buf.String()
 }

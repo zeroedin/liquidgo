@@ -3,6 +3,7 @@ package liquid
 import (
 	"reflect"
 	"strings"
+	"time"
 )
 
 // MethodLiteral represents a method literal (blank, empty).
@@ -28,7 +29,10 @@ type Condition struct {
 	attachment     interface{}
 	childCondition *Condition
 	operator       string
-	childRelation  string
+	// operate is the operator, found once when the condition is made (nil
+	// for an unknown one).
+	operate       ConditionOperator
+	childRelation string
 }
 
 // NewCondition creates a new Condition.
@@ -36,6 +40,7 @@ func NewCondition(left interface{}, operator string, right interface{}) *Conditi
 	return &Condition{
 		left:     left,
 		operator: operator,
+		operate:  getConditionOperator(operator),
 		right:    right,
 	}
 }
@@ -99,22 +104,17 @@ func (c *Condition) Evaluate(context ConditionContext) (bool, error) {
 	var err error
 
 	for {
-		result, err = c.interpretCondition(condition.left, condition.right, condition.operator, context)
+		result, err = c.interpretCondition(condition.left, condition.right, condition.operator, condition.operate, context)
 		if err != nil {
 			return false, err
 		}
 
-		resultVal := ToLiquidValue(result)
 		shouldContinue := false
 		switch condition.childRelation {
 		case "or":
-			if resultVal == nil || resultVal == false || resultVal == "" {
-				shouldContinue = true
-			}
+			shouldContinue = !result
 		case "and":
-			if resultVal != nil && resultVal != false && resultVal != "" {
-				shouldContinue = true
-			}
+			shouldContinue = result
 		}
 
 		if !shouldContinue || condition.childCondition == nil {
@@ -126,22 +126,29 @@ func (c *Condition) Evaluate(context ConditionContext) (bool, error) {
 	return result, nil
 }
 
-func (c *Condition) interpretCondition(left, right interface{}, op string, context ConditionContext) (bool, error) {
+// truthy reports whether a condition holds for value: nil, false and an
+// empty string do not (an empty string is a deliberate divergence).
+func truthy(value interface{}) bool {
+	switch v := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case string:
+		return v != ""
+	}
+	return true
+}
+
+func (c *Condition) interpretCondition(left, right interface{}, op string, operator ConditionOperator, context ConditionContext) (bool, error) {
 	// If operator is empty, just evaluate the left side
 	if op == "" {
-		result := context.Evaluate(left)
-		resultVal := ToLiquidValue(result)
-		// Convert to bool
-		if resultVal == nil || resultVal == false || resultVal == "" {
-			return false, nil
-		}
-		return true, nil
+		return truthy(ToLiquidValue(context.Evaluate(left))), nil
 	}
 
 	leftVal := ToLiquidValue(context.Evaluate(left))
 	rightVal := ToLiquidValue(context.Evaluate(right))
 
-	operator := getConditionOperator(op)
 	if operator == nil {
 		return false, NewArgumentError("Unknown operator " + op)
 	}
@@ -149,71 +156,28 @@ func (c *Condition) interpretCondition(left, right interface{}, op string, conte
 	return operator(c, leftVal, rightVal)
 }
 
+// conditionOperators are the operators of a condition, made once.
+var conditionOperators = map[string]ConditionOperator{
+	"==": func(cond *Condition, left, right interface{}) (bool, error) {
+		return cond.equalVariables(left, right), nil
+	},
+	"!=": notEqualOperator,
+	"<>": notEqualOperator,
+	"<":  orderOperator(func(cmp int) bool { return cmp < 0 }),
+	">":  orderOperator(func(cmp int) bool { return cmp > 0 }),
+	">=": orderOperator(func(cmp int) bool { return cmp >= 0 }),
+	"<=": orderOperator(func(cmp int) bool { return cmp <= 0 }),
+	"contains": func(_ *Condition, left, right interface{}) (bool, error) {
+		return containsOperator(left, right), nil
+	},
+}
+
+func notEqualOperator(cond *Condition, left, right interface{}) (bool, error) {
+	return !cond.equalVariables(left, right), nil
+}
+
 func getConditionOperator(op string) ConditionOperator {
-	switch op {
-	case "==":
-		return func(cond *Condition, left, right interface{}) (bool, error) {
-			return cond.equalVariables(left, right), nil
-		}
-	case "!=", "<>":
-		return func(cond *Condition, left, right interface{}) (bool, error) {
-			return !cond.equalVariables(left, right), nil
-		}
-	case "<":
-		return func(_ *Condition, left, right interface{}) (bool, error) {
-			// Handle nil comparisons: all comparisons with nil evaluate to false (matching Shopify Liquid)
-			if left == nil || right == nil {
-				return false, nil
-			}
-			res, err := compareValues(left, right)
-			if err != nil {
-				return false, err
-			}
-			return res < 0, nil
-		}
-	case ">":
-		return func(_ *Condition, left, right interface{}) (bool, error) {
-			// Handle nil comparisons: all comparisons with nil evaluate to false (matching Shopify Liquid)
-			if left == nil || right == nil {
-				return false, nil
-			}
-			res, err := compareValues(left, right)
-			if err != nil {
-				return false, err
-			}
-			return res > 0, nil
-		}
-	case ">=":
-		return func(_ *Condition, left, right interface{}) (bool, error) {
-			// Handle nil comparisons: all comparisons with nil evaluate to false (matching Shopify Liquid)
-			if left == nil || right == nil {
-				return false, nil
-			}
-			res, err := compareValues(left, right)
-			if err != nil {
-				return false, err
-			}
-			return res >= 0, nil
-		}
-	case "<=":
-		return func(_ *Condition, left, right interface{}) (bool, error) {
-			// Handle nil comparisons: all comparisons with nil evaluate to false (matching Shopify Liquid)
-			if left == nil || right == nil {
-				return false, nil
-			}
-			res, err := compareValues(left, right)
-			if err != nil {
-				return false, err
-			}
-			return res <= 0, nil
-		}
-	case "contains":
-		return func(_ *Condition, left, right interface{}) (bool, error) {
-			return containsOperator(left, right), nil
-		}
-	default:
-		return nil
-	}
+	return conditionOperators[op]
 }
 
 func (c *Condition) equalVariables(left, right interface{}) bool {
@@ -225,123 +189,172 @@ func (c *Condition) equalVariables(left, right interface{}) bool {
 		return checkMethodLiteral(ml, left)
 	}
 
-	return left == right
+	return liquidEqual(left, right)
 }
 
 func checkMethodLiteral(ml *MethodLiteral, obj interface{}) bool {
 	switch ml.MethodName {
 	case "blank":
-		if str, ok := obj.(string); ok {
-			return strings.TrimSpace(str) == ""
-		}
-		return obj == nil || obj == ""
+		return liquidBlank(obj)
 	case "empty":
-		if str, ok := obj.(string); ok {
-			return str == ""
-		}
-		if arr, ok := obj.([]interface{}); ok {
-			return len(arr) == 0
-		}
-		if m, ok := obj.(map[string]interface{}); ok {
-			return len(m) == 0
-		}
-		// Reflection fallback for typed slices/arrays/maps
-		// This matches Ruby's duck-typing behavior: objects respond to .empty?
-		if obj != nil {
-			v := reflect.ValueOf(obj)
-			kind := v.Kind()
-			if kind == reflect.Slice || kind == reflect.Array || kind == reflect.Map {
-				return v.Len() == 0
-			}
-		}
-		return obj == nil || obj == ""
+		return liquidEmpty(obj)
 	default:
 		return false
 	}
 }
 
-func compareValues(left, right interface{}) (int, error) {
-	// Handle nil comparisons gracefully (matching Shopify Liquid behavior)
-	// When comparing nil with a number, the comparison should evaluate to false
-	// To achieve this, we return -1 for nil comparisons, which makes:
-	// - "nil > number" → res > 0 → -1 > 0 → false ✓
-	// - "number > nil" → res > 0 → -1 > 0 → false ✓
-	// - "nil < number" → res < 0 → -1 < 0 → true (but condition will be false due to nil falsiness)
-	// - "number < nil" → res < 0 → -1 < 0 → true (but condition will be false due to nil falsiness)
-	if left == nil && right != nil {
-		// Check if right is a number
-		_, rightOk := toNumber(right)
-		if rightOk {
-			return -1, nil
-		}
+// liquidBlank is Ruby's liquid_blank? (Shopify Liquid 5.14), ActiveSupport's
+// blank?: nil, a string of whitespace only, and an empty list or hash are
+// blank; true and numbers are not. Two differences are deliberate, for the
+// display conditions of Notifuse: false is a value, not blank, and the
+// whitespace of a string is Unicode's (a no-break space is blank), where
+// Ruby makes false blank and counts ASCII whitespace only.
+func liquidBlank(obj interface{}) bool {
+	switch v := obj.(type) {
+	case nil:
+		return true
+	case bool:
+		return false
+	case string:
+		return strings.TrimSpace(v) == ""
 	}
-	if right == nil && left != nil {
-		// Check if left is a number
-		_, leftOk := toNumber(left)
-		if leftOk {
-			return -1, nil
-		}
+	if _, ok := asNumber(obj); ok {
+		return false
 	}
-	if left == nil && right == nil {
-		// Both are nil, they're equal
-		return 0, nil
-	}
-
-	// Simple numeric comparison
-	leftNum, leftOk := toNumber(left)
-	rightNum, rightOk := toNumber(right)
-	if leftOk && rightOk {
-		if leftNum < rightNum {
-			return -1, nil
-		} else if leftNum > rightNum {
-			return 1, nil
-		}
-		return 0, nil
-	}
-
-	// If one is a number and the other is not (and neither is nil), it's a type mismatch for comparison
-	if leftOk || rightOk {
-		// Format types nicely for error message
-		leftType := "nil"
-		if left != nil {
-			leftType = reflect.TypeOf(left).Name()
-			if leftType == "" {
-				leftType = reflect.TypeOf(left).String()
-			}
-		}
-		rightType := "nil"
-		if right != nil {
-			rightType = reflect.TypeOf(right).Name()
-			if rightType == "" {
-				rightType = reflect.TypeOf(right).String()
-			}
-		}
-		return 0, NewArgumentError("comparison of " + leftType + " with " + rightType + " failed")
-	}
-
-	// String comparison
-	leftStr := ToS(left, nil)
-	rightStr := ToS(right, nil)
-	if leftStr < rightStr {
-		return -1, nil
-	} else if leftStr > rightStr {
-		return 1, nil
-	}
-	return 0, nil
+	return liquidEmpty(obj)
 }
 
-func toNumber(v interface{}) (float64, bool) {
-	switch n := v.(type) {
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case float64:
-		return n, true
+// liquidEmpty is Ruby's liquid_empty?: a string, a list or a hash with nothing
+// in it; nil is not empty.
+func liquidEmpty(obj interface{}) bool {
+	switch v := obj.(type) {
+	case string:
+		return v == ""
+	case []interface{}:
+		return len(v) == 0
+	case map[string]interface{}:
+		return len(v) == 0
+	case nil:
+		return false
 	}
-	return 0, false
+	// typed lists and hashes, which Ruby has as Array and Hash
+	v := reflect.ValueOf(obj)
+	switch v.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return v.Len() == 0
+	}
+	return false
 }
 
+// orderOperator returns <, >, <= or >=, holding when holds accepts the
+// comparison of the two sides.
+func orderOperator(holds func(cmp int) bool) ConditionOperator {
+	return func(_ *Condition, left, right interface{}) (bool, error) {
+		cmp, ok, err := compareValues(left, right)
+		if err != nil || !ok {
+			return false, err
+		}
+		return holds(cmp), nil
+	}
+}
+
+// orderKind is how a value takes part in <, >, <= and >=.
+type orderKind int
+
+const (
+	// unordered: the value has no comparison methods in Ruby, as nil, a
+	// boolean, an array, a hash or a drop.
+	unordered orderKind = iota
+	orderedNumber
+	orderedString
+	orderedTime
+)
+
+func orderKindOf(v interface{}) orderKind {
+	if _, ok := asNumber(v); ok {
+		return orderedNumber
+	}
+	if isBigInt(v) {
+		return orderedNumber
+	}
+	if _, ok := timeOf(v); ok {
+		return orderedTime
+	}
+	if v != nil && reflect.ValueOf(v).Kind() == reflect.String {
+		return orderedString
+	}
+	return unordered
+}
+
+// compareValues compares two values as Ruby's left.send(op, right) in a
+// condition. ok is false when either side has no comparison methods, which
+// makes the condition false, and when a float is NaN. Numbers, strings and
+// times compare only among their kind; any other pair raises Ruby's
+// ArgumentError.
+func compareValues(left, right interface{}) (cmp int, ok bool, err error) {
+	lk, rk := orderKindOf(left), orderKindOf(right)
+	if lk == unordered || rk == unordered {
+		return 0, false, nil
+	}
+	if lk != rk {
+		return 0, false, NewArgumentError("comparison of " + rubyClassName(left) + " with " + comparisonOperand(right) + " failed")
+	}
+	switch lk {
+	case orderedNumber:
+		ln, lok := asNumber(left)
+		rn, rok := asNumber(right)
+		if !lok || !rok { // a *big.Int
+			return compareBigInts(left, right), true, nil
+		}
+		cmp, ok = compareNumbers(ln, rn)
+		return cmp, ok, nil
+	case orderedTime:
+		lt, _ := timeOf(left)
+		rt, _ := timeOf(right)
+		return lt.Compare(rt), true, nil
+	}
+	return strings.Compare(reflect.ValueOf(left).String(), reflect.ValueOf(right).String()), true, nil
+}
+
+// timeOf returns the time of a time.Time or a non-nil *time.Time.
+func timeOf(v interface{}) (time.Time, bool) {
+	switch t := v.(type) {
+	case time.Time:
+		return t, true
+	case *time.Time:
+		if t != nil {
+			return *t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// rubyClassName returns the name of the Ruby class of an ordered value.
+func rubyClassName(v interface{}) string {
+	switch orderKindOf(v) {
+	case orderedNumber:
+		if n, _ := asNumber(v); n.kind == floatNumber {
+			return "Float"
+		}
+		return "Integer"
+	case orderedTime:
+		return "Time"
+	}
+	return "String"
+}
+
+// comparisonOperand writes the right side of a failed comparison as Ruby's
+// rb_cmperr: a number by its value, anything else by its class.
+func comparisonOperand(v interface{}) string {
+	if orderKindOf(v) == orderedNumber {
+		return ToS(v, nil)
+	}
+	return rubyClassName(v)
+}
+
+// containsOperator implements contains as Ruby's include?: a substring for a string
+// (the right side converted to text), an element equal to the right side for a list,
+// a key for a map.
 func containsOperator(left, right interface{}) bool {
 	if left == nil || right == nil {
 		return false
@@ -349,65 +362,47 @@ func containsOperator(left, right interface{}) bool {
 
 	rightStr := ToS(right, nil)
 
-	// Check if left is a string
 	if leftStr, ok := left.(string); ok {
 		return strings.Contains(leftStr, rightStr)
 	}
 
-	// Check if left is a slice/array
-	if arr, ok := left.([]interface{}); ok {
-		for _, item := range arr {
-			itemStr := ToS(item, nil)
-			// Check for exact match or substring match
-			if itemStr == rightStr || strings.Contains(itemStr, rightStr) {
+	v := reflect.ValueOf(left)
+	switch v.Kind() {
+	case reflect.String:
+		return strings.Contains(v.String(), rightStr)
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if liquidEqual(v.Index(i).Interface(), right) {
 				return true
 			}
 		}
-	} else if left != nil {
-		// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
-		// This matches Ruby's duck-typing behavior: arrays respond to include?
-		v := reflect.ValueOf(left)
-		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-			for i := 0; i < v.Len(); i++ {
-				item := v.Index(i).Interface()
-				itemStr := ToS(item, nil)
-				// Check for exact match or substring match
-				if itemStr == rightStr || strings.Contains(itemStr, rightStr) {
-					return true
-				}
-			}
-			return false
+		return false
+	case reflect.Map:
+		if m, ok := left.(map[string]interface{}); ok {
+			_, exists := m[rightStr]
+			return exists
 		}
-	}
-
-	// Check if left is a map
-	if m, ok := left.(map[string]interface{}); ok {
-		_, exists := m[rightStr]
-		return exists
-	}
-
-	// Use reflection to check typed maps (map[string]string, map[string]int, etc.)
-	if left != nil {
-		v := reflect.ValueOf(left)
-		if v.Kind() == reflect.Map {
-			// For maps, check if the key exists
-			keyVal := reflect.ValueOf(rightStr)
-			mapKey := v.MapIndex(keyVal)
-			if mapKey.IsValid() {
+		keyVal := reflect.ValueOf(rightStr)
+		if keyVal.Type().AssignableTo(v.Type().Key()) && v.MapIndex(keyVal).IsValid() {
+			return true
+		}
+		// Also try to find the key by iterating (in case key types don't match exactly)
+		iter := v.MapRange()
+		for iter.Next() {
+			if ToS(iter.Key().Interface(), nil) == rightStr {
 				return true
-			}
-			// Also try to find the key by iterating (in case key types don't match exactly)
-			iter := v.MapRange()
-			for iter.Next() {
-				keyStr := ToS(iter.Key().Interface(), nil)
-				if keyStr == rightStr {
-					return true
-				}
 			}
 		}
 	}
 
 	return false
+}
+
+// MethodLiteralOf returns the method literal markup names (blank, empty), or
+// nil: a condition compares a value with it by its method, as Ruby's
+// Condition.parse_expression.
+func MethodLiteralOf(markup string) *MethodLiteral {
+	return conditionMethodLiterals[markup]
 }
 
 // ParseConditionExpression parses an expression for use in conditions.

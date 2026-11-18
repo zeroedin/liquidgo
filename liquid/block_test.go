@@ -7,7 +7,7 @@ import (
 
 func TestBlockBasic(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	block := NewBlock("if", "condition", pc)
 	if block == nil {
@@ -23,7 +23,7 @@ func TestBlockBasic(t *testing.T) {
 
 func TestBlockDelimiter(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	block := NewBlock("for", "item in items", pc)
 	if block.BlockDelimiter() != "endfor" {
@@ -38,7 +38,7 @@ func TestBlockDelimiter(t *testing.T) {
 
 func TestBlockBlank(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	block := NewBlock("if", "condition", pc)
 	if !block.Blank() {
@@ -48,7 +48,7 @@ func TestBlockBlank(t *testing.T) {
 
 func TestBlockNodelist(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	block := NewBlock("if", "condition", pc)
 	nodelist := block.Nodelist()
@@ -72,7 +72,7 @@ func TestBlockNodelist(t *testing.T) {
 
 func TestRaiseUnknownTag(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	err := RaiseUnknownTag("unknown", "if", "endif", pc)
 	if err == nil {
@@ -85,7 +85,7 @@ func TestRaiseUnknownTag(t *testing.T) {
 
 func TestRaiseUnknownTagElse(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	err := RaiseUnknownTag("else", "if", "endif", pc)
 	if err == nil {
@@ -98,7 +98,7 @@ func TestRaiseUnknownTagElse(t *testing.T) {
 
 func TestRaiseUnknownTagEnd(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	err := RaiseUnknownTag("endunless", "if", "endif", pc)
 	if err == nil {
@@ -148,14 +148,19 @@ func TestBlockParse(t *testing.T) {
 		t.Error("Expected body to be set")
 	}
 
-	// Test parsing with nested content
+	// A tag the environment does not know is a syntax error, as Ruby's
+	// unknown_tag: no tag is registered here
 	source2 := "outer{% if inner %}{% endif %}inner{% endif %}"
 	tokenizer2 := NewTokenizer(source2, nil, false, nil, false)
 	block2 := NewBlock("if", "condition", pc)
-	err = block2.Parse(tokenizer2)
-	if err != nil {
-		t.Fatalf("Parse() with nested content error = %v", err)
-	}
+	defer func() {
+		r := recover()
+		if err, ok := r.(*SyntaxError); !ok || !strings.Contains(err.Error(), "Unknown tag 'if'") {
+			t.Errorf("Parse() of an unknown tag raised %v, want Unknown tag 'if'", r)
+		}
+	}()
+	_ = block2.Parse(tokenizer2)
+	t.Error("Parse() of an unknown tag returned")
 }
 
 // TestBlockRender tests block rendering
@@ -169,14 +174,14 @@ func TestBlockRender(t *testing.T) {
 	block.body.nodelist = []interface{}{"hello", " ", "world"}
 
 	ctx := NewContext()
-	result := block.Render(ctx)
+	result := renderString(block, ctx)
 	if result != "hello world" {
 		t.Errorf("Expected 'hello world', got %q", result)
 	}
 
 	// Test with nil body
 	block2 := NewBlock("if", "condition", pc)
-	result2 := block2.Render(ctx)
+	result2 := renderString(block2, ctx)
 	if result2 != "" {
 		t.Errorf("Expected empty string for nil body, got %q", result2)
 	}
@@ -194,7 +199,7 @@ func TestBlockRenderToOutputBuffer(t *testing.T) {
 
 	ctx := NewContext()
 	output := ""
-	block.RenderToOutputBuffer(ctx, &output)
+	renderToString(block, ctx, &output)
 	if output != "test" {
 		t.Errorf("Expected 'test', got %q", output)
 	}
@@ -202,7 +207,7 @@ func TestBlockRenderToOutputBuffer(t *testing.T) {
 	// Test with nil body
 	block2 := NewBlock("if", "condition", pc)
 	output2 := ""
-	block2.RenderToOutputBuffer(ctx, &output2)
+	renderToString(block2, ctx, &output2)
 	if output2 != "" {
 		t.Errorf("Expected empty output for nil body, got %q", output2)
 	}
@@ -211,7 +216,7 @@ func TestBlockRenderToOutputBuffer(t *testing.T) {
 // TestBlockUnknownTag tests UnknownTag method with various scenarios
 func TestBlockUnknownTag(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	block := NewBlock("if", "condition", pc)
 
@@ -240,7 +245,7 @@ func TestBlockUnknownTag(t *testing.T) {
 // TestBlockRaiseTagNeverClosed tests error when tag is never closed
 func TestBlockRaiseTagNeverClosed(t *testing.T) {
 	lineNum := 1
-	pc := &mockParseContextForTag{lineNum: &lineNum, env: NewEnvironment()}
+	pc := &mockParseContextForTag{lineNum: &lineNum, env: newEnvironment()}
 
 	block := NewBlock("if", "condition", pc)
 	err := block.RaiseTagNeverClosed()
@@ -300,7 +305,14 @@ func TestBlockNesting(t *testing.T) {
 	pc := NewParseContext(ParseContextOptions{})
 	pc.SetLineNumber(&lineNum)
 
-	// Test nested if blocks
+	// Test nested if blocks, with if registered as a plain block
+	envTags := map[string]TagConstructor{}
+	envTags["if"] = func(tagName, markup string, parseContext ParseContextInterface) (Node, error) {
+		return NewBlock(tagName, markup, parseContext), nil
+	}
+	env := mustEnv(EnvironmentConfig{Tags: envTags})
+	pc = NewParseContext(ParseContextOptions{Environment: env})
+	pc.SetLineNumber(&lineNum)
 	source := "outer{% if inner %}{% endif %}inner{% endif %}"
 	tokenizer := NewTokenizer(source, nil, false, nil, false)
 	block := NewBlock("if", "condition", pc)

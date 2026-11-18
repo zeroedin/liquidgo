@@ -2,14 +2,12 @@ package tags
 
 import (
 	"regexp"
-	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var (
-	docNoUnexpectedArgs         = regexp.MustCompile(`^\s*$`)
-	docFullTokenPossiblyInvalid = regexp.MustCompile(`^{%-?(\s*)(\w+)(\s*)(.*?)-?%}$`)
+	docNoUnexpectedArgs = regexp.MustCompile(`^\s*$`)
 )
 
 // DocTag represents a doc block tag that stores documentation without rendering it.
@@ -22,13 +20,7 @@ type DocTag struct {
 func NewDocTag(tagName, markup string, parseContext liquid.ParseContextInterface) (*DocTag, error) {
 	// Validate markup is empty
 	if !docNoUnexpectedArgs.MatchString(markup) {
-		var locale *liquid.I18n
-		if pc, ok := parseContext.(*liquid.ParseContext); ok {
-			locale = pc.Locale()
-			msg := locale.Translate("errors.syntax.block_tag_unexpected_args", map[string]interface{}{"tag": tagName})
-			return nil, liquid.NewSyntaxError(msg)
-		}
-		return nil, liquid.NewSyntaxError("Liquid syntax error: block tag unexpected args")
+		return nil, liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.block_tag_unexpected_args", map[string]interface{}{"tag": tagName})
 	}
 
 	block := liquid.NewBlock(tagName, markup, parseContext)
@@ -38,8 +30,8 @@ func NewDocTag(tagName, markup string, parseContext liquid.ParseContextInterface
 	}, nil
 }
 
-// RenderToOutputBuffer renders the doc tag (does nothing - docs don't render).
-func (d *DocTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the doc tag (does nothing - docs don't render).
+func (d *DocTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	// Docs don't render anything
 	_ = context // no-op to register coverage
 }
@@ -60,50 +52,22 @@ func (d *DocTag) Parse(tokenizer *liquid.Tokenizer) error {
 	blockDelimiter := d.BlockDelimiter()
 	tagName := d.TagName()
 
-	for {
+	for !tokenizer.Exhausted() {
 		token := tokenizer.Shift()
-		if token == "" {
-			break
-		}
-
-		// Extract tag name from token
-		var foundTagName string
-		var leadingWhitespace string
-
-		if strings.HasPrefix(token, "{%") {
-			matches := docFullTokenPossiblyInvalid.FindStringSubmatch(token)
-			if len(matches) > 0 {
-				leadingWhitespace = matches[1]
-				foundTagName = matches[2]
-			}
-		}
+		before, foundTagName, _ := liquid.MatchTagPossiblyInvalid(token)
 
 		// Raise error if nested doc tag found
 		if foundTagName == tagName {
-			var locale *liquid.I18n
-			if pc, ok := d.ParseContext().(*liquid.ParseContext); ok {
-				locale = pc.Locale()
-				msg := locale.Translate("errors.syntax.doc_invalid_nested", map[string]interface{}{})
-				return liquid.NewSyntaxError(msg)
-			}
-			return liquid.NewSyntaxError("Liquid syntax error: doc invalid nested")
+			return liquid.NewSyntaxErrorFor(d.ParseContext(), "errors.syntax.doc_invalid_nested", nil)
 		}
 
 		if foundTagName == blockDelimiter {
-			// Handle whitespace trimming
-			if len(token) >= 3 && token[len(token)-3] == '-' {
-				d.ParseContext().SetTrimWhitespace(true)
-			}
-			// Include leading whitespace in body if present
-			if leadingWhitespace != "" {
-				d.body += leadingWhitespace
-			}
+			d.ParseContext().SetTrimWhitespace(liquid.TrimsAfter(token))
+			d.body += before
 			return nil
 		}
 
-		if token != "" {
-			d.body += token
-		}
+		d.body += token
 	}
 
 	// Tag never closed

@@ -1,17 +1,16 @@
 package tags
 
 import (
-	"reflect"
 	"regexp"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var (
 	// includeSyntax matches: 'filename' [with|for expression] [as alias] [attributes...]
 	// Note: QuotedFragment already has +, so we don't add another
-	includeSyntax = regexp.MustCompile(`(` + liquid.QuotedFragment.String() + `)(\s+(?:with|for)\s+(` + liquid.QuotedFragment.String() + `))?(\s+(?:as)\s+(` + liquid.VariableSegment.String() + `+))?`)
+	includeSyntax = regexp.MustCompile(`(` + liquid.QuotedFragment.String() + `)(\s+(with|for)\s+(` + liquid.QuotedFragment.String() + `))?(\s+(?:as)\s+(` + liquid.VariableSegment.String() + `+))?`)
 )
 
 // IncludeTag represents an include tag that renders a partial template.
@@ -22,7 +21,12 @@ type IncludeTag struct {
 	variableNameExpr interface{}            // Expression or nil
 	aliasName        string                 // Alias name or ""
 	attributes       map[string]interface{} // Attribute expressions
+	forLoop          bool                   // the variable follows for, not with
 }
+
+// ForLoop reports whether the include iterates its variable, written with
+// for rather than with, as Shopify Liquid 5.14's for_loop?.
+func (i *IncludeTag) ForLoop() bool { return i.forLoop }
 
 // NewIncludeTag creates a new IncludeTag.
 func NewIncludeTag(tagName, markup string, parseContext liquid.ParseContextInterface) (*IncludeTag, error) {
@@ -46,7 +50,7 @@ func NewIncludeTag(tagName, markup string, parseContext liquid.ParseContextInter
 func (i *IncludeTag) parseMarkup(markup string, parseContext liquid.ParseContextInterface) error {
 	matches := includeSyntax.FindStringSubmatch(markup)
 	if len(matches) == 0 {
-		return liquid.NewSyntaxError("invalid include tag syntax")
+		return liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.include", nil)
 	}
 
 	// Template name
@@ -54,13 +58,14 @@ func (i *IncludeTag) parseMarkup(markup string, parseContext liquid.ParseContext
 	i.templateNameExpr = parseContext.ParseExpression(templateNameStr)
 
 	// Variable name (with/for)
-	if len(matches) > 3 && matches[3] != "" {
-		i.variableNameExpr = parseContext.ParseExpression(matches[3])
+	if len(matches) > 4 && matches[4] != "" {
+		i.variableNameExpr = parseContext.ParseExpression(matches[4])
+		i.forLoop = matches[3] == "for"
 	}
 
 	// Alias name (as)
-	if len(matches) > 5 && matches[5] != "" {
-		i.aliasName = matches[5]
+	if len(matches) > 6 && matches[6] != "" {
+		i.aliasName = matches[6]
 	}
 
 	// Parse attributes
@@ -83,8 +88,8 @@ func (i *IncludeTag) Parse(tokenizer *liquid.Tokenizer) error {
 	return nil
 }
 
-// RenderToOutputBuffer renders the include tag.
-func (i *IncludeTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the include tag.
+func (i *IncludeTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	// Evaluate template name
 	templateName := context.Evaluate(i.templateNameExpr)
 	templateNameStr, ok := templateName.(string)
@@ -100,23 +105,15 @@ func (i *IncludeTag) RenderToOutputBuffer(context liquid.TagContext, output *str
 			msg = "include tag requires a string template name"
 		}
 		errorMsg := context.HandleError(liquid.NewArgumentError(msg), i.LineNumber())
-		*output += errorMsg
+		output.WriteString(errorMsg)
 		return
 	}
 
 	// Load partial from cache
-	partial, err := liquid.LoadPartial(templateNameStr, context, i.ParseContext())
+	partialTemplate, err := liquid.LoadPartial(templateNameStr, context, i.ParseContext())
 	if err != nil {
 		errorMsg := context.HandleError(err, i.LineNumber())
-		*output += errorMsg
-		return
-	}
-
-	// Get partial as Template
-	partialTemplate, ok := partial.(*liquid.Template)
-	if !ok {
-		errorMsg := context.HandleError(liquid.NewFileSystemError("partial is not a template"), i.LineNumber())
-		*output += errorMsg
+		output.WriteString(errorMsg)
 		return
 	}
 
@@ -143,7 +140,7 @@ func (i *IncludeTag) RenderToOutputBuffer(context liquid.TagContext, output *str
 	ctx, ok := context.(*liquid.Context)
 	if !ok {
 		errorMsg := context.HandleError(liquid.NewInternalError("context is not a liquid.Context"), i.LineNumber())
-		*output += errorMsg
+		output.WriteString(errorMsg)
 		return
 	}
 
@@ -158,6 +155,12 @@ func (i *IncludeTag) RenderToOutputBuffer(context liquid.TagContext, output *str
 	}
 	ctx.SetTemplateName(partialName)
 	ctx.SetPartial(true)
+	// Restore the state when the partial ends, even on an error, as Ruby's
+	// ensure.
+	defer func() {
+		ctx.SetTemplateName(oldTemplateName)
+		ctx.SetPartial(oldPartial)
+	}()
 
 	// Use stack to create isolated scope
 	ctx.Stack(make(map[string]interface{}), func() {
@@ -172,32 +175,27 @@ func (i *IncludeTag) RenderToOutputBuffer(context liquid.TagContext, output *str
 			// Array: render once for each item
 			for _, varItem := range arr {
 				ctx.Set(contextVariableName, varItem)
-				partialTemplate.RenderToOutputBuffer(ctx, output)
+				partialTemplate.RenderToOutput(ctx, output)
 			}
 		} else if variable != nil {
 			// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
 			// This matches Ruby's duck-typing behavior: arrays respond to iteration
-			v := reflect.ValueOf(variable)
-			if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-				for i := 0; i < v.Len(); i++ {
-					ctx.Set(contextVariableName, v.Index(i).Interface())
-					partialTemplate.RenderToOutputBuffer(ctx, output)
+			if items, ok := liquid.SliceItems(variable); ok {
+				for _, item := range items {
+					ctx.Set(contextVariableName, item)
+					partialTemplate.RenderToOutput(ctx, output)
 				}
 			} else {
 				// Single value
 				ctx.Set(contextVariableName, variable)
-				partialTemplate.RenderToOutputBuffer(ctx, output)
+				partialTemplate.RenderToOutput(ctx, output)
 			}
 		} else {
 			// Single value
 			ctx.Set(contextVariableName, variable)
-			partialTemplate.RenderToOutputBuffer(ctx, output)
+			partialTemplate.RenderToOutput(ctx, output)
 		}
 	})
-
-	// Restore old state
-	ctx.SetTemplateName(oldTemplateName)
-	ctx.SetPartial(oldPartial)
 }
 
 // TemplateNameExpr returns the template name expression.

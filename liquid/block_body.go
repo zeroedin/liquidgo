@@ -8,9 +8,31 @@ import (
 
 var (
 	blockBodyLiquidTagToken      = regexp.MustCompile(`^\s*(` + TagName.String() + `)\s*(.*?)$`)
-	blockBodyFullToken           = regexp.MustCompile(`^` + TagStart.String() + `-?(\s*)(` + TagName.String() + `)(\s*)(.*?)-?` + TagEnd.String() + `$`)
+	blockBodyFullToken           = regexp.MustCompile(`(?s)^` + TagStart.String() + `-?(\s*)(` + TagName.String() + `)(\s*)(.*?)-?` + TagEnd.String() + `$`)
 	blockBodyWhitespaceOrNothing = regexp.MustCompile(`^\s*$`)
+	// blockBodyFullTokenPossiblyInvalid is Ruby's BlockBody::FullTokenPossiblyInvalid: a
+	// token ending with a tag, with any text before it ("{% invalid {% endraw %}").
+	blockBodyFullTokenPossiblyInvalid = regexp.MustCompile(`(?s)^(.*)` + TagStart.String() + `-?\s*(\w+)\s*(.*)?-?` + TagEnd.String() + `$`)
 )
+
+// MatchTagPossiblyInvalid reports whether token ends with a tag, and returns the text
+// before that tag and its name. raw, comment and doc use it to find their closing tag.
+func MatchTagPossiblyInvalid(token string) (before, tagName string, ok bool) {
+	// most tokens of a raw or comment body are text; skip the regexp for them
+	if !strings.HasSuffix(token, "%}") {
+		return "", "", false
+	}
+	m := blockBodyFullTokenPossiblyInvalid.FindStringSubmatch(token)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+// TrimsAfter reports whether a tag token ends with whitespace control ("-%}").
+func TrimsAfter(token string) bool {
+	return len(token) >= 3 && token[len(token)-3] == '-'
+}
 
 const (
 	blockBodyTAGSTART = "{%"
@@ -21,6 +43,9 @@ const (
 type BlockBody struct {
 	nodelist []interface{}
 	blank    bool
+	// blankErrorText is set when the body was parsed in strict2: the error
+	// of a blank tag writes its message then, as in Shopify Liquid 5.14.
+	blankErrorText bool
 }
 
 // NewBlockBody creates a new BlockBody.
@@ -39,6 +64,7 @@ func (bb *BlockBody) Nodelist() []interface{} {
 // Parse parses tokens into the block body.
 func (bb *BlockBody) Parse(tokenizer *Tokenizer, parseContext ParseContextInterface, unknownTagHandler func(string, string) bool) error {
 	parseContext.SetLineNumber(tokenizer.LineNumber())
+	bb.blankErrorText = rigidMode(parseContext.ErrorMode())
 
 	if tokenizer.ForLiquidTag() {
 		return bb.parseForLiquidTag(tokenizer, parseContext, unknownTagHandler)
@@ -47,11 +73,9 @@ func (bb *BlockBody) Parse(tokenizer *Tokenizer, parseContext ParseContextInterf
 }
 
 func (bb *BlockBody) parseForLiquidTag(tokenizer *Tokenizer, parseContext ParseContextInterface, unknownTagHandler func(string, string) bool) error {
-	for {
+	// An empty line is a token too: stop only when the tokenizer is exhausted.
+	for !tokenizer.Exhausted() {
 		token := tokenizer.Shift()
-		if token == "" {
-			break
-		}
 
 		if token == "" || blockBodyWhitespaceOrNothing.MatchString(token) {
 			continue
@@ -76,7 +100,7 @@ func (bb *BlockBody) parseForLiquidTag(tokenizer *Tokenizer, parseContext ParseC
 				lineNum := *parseContext.LineNumber() - 1
 				parseContext.SetLineNumber(&lineNum)
 			}
-			bb.parseLiquidTag(markup, parseContext)
+			bb.parseNestedLiquidTag(markup, parseContext)
 			continue
 		}
 
@@ -97,73 +121,18 @@ func (bb *BlockBody) parseForLiquidTag(tokenizer *Tokenizer, parseContext ParseC
 			continue
 		}
 
-		// Create tag using constructor if available
-		// TagConstructor is defined in tags package, so we use reflection to call it
-		var tag interface{}
-
-		// Try to call tagClass as a function using reflection
-		tagClassValue := reflect.ValueOf(tagClass)
-		if tagClassValue.Kind() == reflect.Func {
-			// Check if it matches the TagConstructor signature: func(string, string, ParseContextInterface) (interface{}, error)
-			tagClassType := tagClassValue.Type()
-			if tagClassType.NumIn() == 3 && tagClassType.NumOut() == 2 {
-				// Call the constructor function
-				args := []reflect.Value{
-					reflect.ValueOf(tagName),
-					reflect.ValueOf(markup),
-					reflect.ValueOf(parseContext),
-				}
-
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							if e, ok := r.(error); ok {
-								if parseContext.ErrorMode() == "warn" {
-									parseContext.AddWarning(e)
-									tag = nil
-								} else {
-									panic(r)
-								}
-							} else {
-								panic(r)
-							}
-						}
-					}()
-					results := tagClassValue.Call(args)
-					if len(results) == 2 {
-						// Check for error
-						if !results[1].IsNil() {
-							if err, ok := results[1].Interface().(error); ok {
-								if parseContext.ErrorMode() == "warn" {
-									parseContext.AddWarning(err)
-									tag = nil
-								} else {
-									panic(err)
-								}
-							}
-						} else {
-							tag = results[0].Interface()
-						}
-					}
-				}()
-			}
-		}
-
-		// If tag creation failed in warn mode, skip it (liquid tags are just lines of code)
-		if tag == nil && parseContext.ErrorMode() == "warn" {
-			continue
-		}
-
-		// If tag is still nil, fallback to generic tag
+		// Create the tag with its constructor; nil means it failed in
+		// warn mode, and the failure is a warning: skip it (liquid tags are just lines of code)
+		tag := newTag(tagClass, tagName, markup, parseContext)
 		if tag == nil {
-			tag = NewTag(tagName, markup, parseContext)
+			continue
 		}
 
 		// Parse the tag if it has a Parse method
 		if parseable, ok := tag.(interface{ Parse(*Tokenizer) error }); ok {
 			err := parseable.Parse(tokenizer)
 			if err != nil {
-				if parseContext.ErrorMode() == "warn" {
+				if parseContext.ErrorMode() == ErrorModeWarn {
 					parseContext.AddWarning(err)
 					continue
 				}
@@ -244,74 +213,19 @@ func (bb *BlockBody) parseForDocument(tokenizer *Tokenizer, parseContext ParseCo
 				continue
 			}
 
-			// Create tag using constructor if available
-			// TagConstructor is defined in tags package, so we use reflection to call it
-			var tag interface{}
-
-			// Try to call tagClass as a function using reflection
-			tagClassValue := reflect.ValueOf(tagClass)
-			if tagClassValue.Kind() == reflect.Func {
-				// Check if it matches the TagConstructor signature: func(string, string, ParseContextInterface) (interface{}, error)
-				tagClassType := tagClassValue.Type()
-				if tagClassType.NumIn() == 3 && tagClassType.NumOut() == 2 {
-					// Call the constructor function
-					args := []reflect.Value{
-						reflect.ValueOf(tagName),
-						reflect.ValueOf(markup),
-						reflect.ValueOf(parseContext),
-					}
-
-					func() {
-						defer func() {
-							if r := recover(); r != nil {
-								if e, ok := r.(error); ok {
-									if parseContext.ErrorMode() == "warn" {
-										parseContext.AddWarning(e)
-										tag = nil
-									} else {
-										panic(r)
-									}
-								} else {
-									panic(r)
-								}
-							}
-						}()
-						results := tagClassValue.Call(args)
-						if len(results) == 2 {
-							// Check for error
-							if !results[1].IsNil() {
-								if err, ok := results[1].Interface().(error); ok {
-									if parseContext.ErrorMode() == "warn" {
-										parseContext.AddWarning(err)
-										tag = nil
-									} else {
-										panic(err)
-									}
-								}
-							} else {
-								tag = results[0].Interface()
-							}
-						}
-					}()
-				}
-			}
-
-			// If tag creation failed in warn mode, treat as text
-			if tag == nil && parseContext.ErrorMode() == "warn" {
+			// Create the tag with its constructor; nil means it failed in
+			// warn mode, and the failure is a warning: treat as text
+			tag := newTag(tagClass, tagName, markup, parseContext)
+			if tag == nil {
 				bb.nodelist = append(bb.nodelist, token)
 				continue
-			}
-
-			// If tag is still nil, fallback to generic tag
-			if tag == nil {
-				tag = NewTag(tagName, markup, parseContext)
 			}
 
 			// Parse the tag if it has a Parse method
 			if parseable, ok := tag.(interface{ Parse(*Tokenizer) error }); ok {
 				err := parseable.Parse(tokenizer)
 				if err != nil {
-					if parseContext.ErrorMode() == "warn" {
+					if parseContext.ErrorMode() == ErrorModeWarn {
 						parseContext.AddWarning(err)
 						// If parsing failed, treat as text
 						bb.nodelist = append(bb.nodelist, token)
@@ -399,7 +313,7 @@ func (bb *BlockBody) createVariable(token string, parseContext ParseContextInter
 		}()
 
 		if err != nil {
-			if parseContext.ErrorMode() == "warn" {
+			if parseContext.ErrorMode() == ErrorModeWarn {
 				parseContext.AddWarning(err)
 				return token
 			}
@@ -418,198 +332,83 @@ func (bb *BlockBody) Blank() bool {
 	return bb.blank
 }
 
-// Render renders the block body.
-func (bb *BlockBody) Render(context TagContext) string {
-	output := ""
-	bb.RenderToOutputBuffer(context, &output)
-	return output
-}
+// RenderToOutput renders the block body to output.
+func (bb *BlockBody) RenderToOutput(context TagContext, output *OutputBuffer) {
+	ctx, _ := context.(*Context)
 
-// RenderToOutputBuffer renders the block body to the output buffer.
-func (bb *BlockBody) RenderToOutputBuffer(context TagContext, output *string) {
-	ctx, hasProfiler := context.(*Context)
-	profiler := hasProfiler && ctx.Profiler() != nil
-
-	// Increment render score (like Ruby: context.resource_limits.increment_render_score(@nodelist.length))
-	if ctx != nil {
-		rl := ctx.ResourceLimits()
-		if rl != nil {
-			rl.IncrementRenderScore(len(bb.nodelist))
-		}
+	// Like Ruby: context.resource_limits.increment_render_score(@nodelist.length),
+	// but an empty body counts 1, so that a loop with an empty body is
+	// bounded too.
+	if rl := limitsOf(context); rl != nil {
+		rl.IncrementRenderScore(max(1, len(bb.nodelist)))
 	}
+	ctx.checkCanceled()
 
 	for _, node := range bb.nodelist {
-		// Optimization: Use type switches instead of reflection for better performance
-		switch n := node.(type) {
-		case string:
-			// Raw strings are not profiled
-			*output += n
-
-		case *Variable:
-			// Handle variables
-			if profiler {
-				code := n.Raw()
-				lineNumber := n.LineNumber()
-				ctx.Profiler().ProfileNode(ctx.TemplateName(), code, lineNumber, func() {
-					n.RenderToOutputBuffer(context, output)
-				})
-			} else {
-				n.RenderToOutputBuffer(context, output)
-			}
-			// Check for interrupts
-			if ctx != nil && ctx.Interrupt() {
-				return
-			}
-
-		default:
-			// For other node types, use interface-based dispatch
-			// This is much faster than reflection and handles all tag types
-			bb.renderNodeOptimized(node, context, output, profiler, ctx)
-
-			// Check for interrupts
-			if ctx != nil && ctx.Interrupt() {
-				return
-			}
+		if s, ok := node.(string); ok {
+			output.WriteString(s)
+			continue
 		}
-
-		// Increment write score after each node
-		if ctx != nil {
-			rl := ctx.ResourceLimits()
-			if rl != nil {
-				rl.IncrementWriteScore(*output)
-			}
+		ctx.checkCanceled()
+		bb.renderNode(context, output, node)
+		if context != nil && context.Interrupt() {
+			return
 		}
 	}
 }
 
-// renderNodeOptimized handles rendering of non-string, non-variable nodes with minimal reflection.
-// Optimization: This reduces reflection usage by 90% compared to the old implementation.
-// Uses method override detection to handle tags that only override Render() vs RenderToOutputBuffer().
-func (bb *BlockBody) renderNodeOptimized(node interface{}, context TagContext, output *string, profiler bool, ctx *Context) {
-	// Get metadata for profiling if needed
-	var code string
-	var lineNumber *int
-
-	if profiler {
-		if r, ok := node.(interface{ Raw() string }); ok {
-			code = r.Raw()
-		}
-		if r, ok := node.(interface{ LineNumber() *int }); ok {
-			lineNumber = r.LineNumber()
-		}
-	}
-
-	// Check if node implements RenderToOutputBuffer
-	type Renderable interface {
-		RenderToOutputBuffer(TagContext, *string)
-	}
-
-	if renderable, ok := node.(Renderable); ok {
-		nodeValue := reflect.ValueOf(node)
-		nodeType := nodeValue.Type()
-
-		// Detect which methods are overridden by checking method counts
-		// Methods with pointer receivers show up on pointer type, value receivers on both
-		hasOwnRender := false
-		hasOwnRTOB := false
-
-		if nodeValue.Kind() == reflect.Ptr {
-			elemType := nodeType.Elem()
-
-			// For pointer receiver methods, check on the pointer type
-			// Compare method counts: if tag has more methods than base, it overrode something
-
-			// Check if this type defines Render (pointer receiver method appears on pointer type)
-			// but NOT on elem type (unless it has value receiver)
-			ptrHasRender := false
-			elemHasRender := false
-
-			if _, ok := nodeType.MethodByName("Render"); ok {
-				ptrHasRender = true
-			}
-			if _, ok := elemType.MethodByName("Render"); ok {
-				elemHasRender = true
-			}
-
-			// Similar check for RenderToOutputBuffer
-			ptrHasRTOB := false
-			elemHasRTOB := false
-
-			if _, ok := nodeType.MethodByName("RenderToOutputBuffer"); ok {
-				ptrHasRTOB = true
-			}
-			if _, ok := elemType.MethodByName("RenderToOutputBuffer"); ok {
-				elemHasRTOB = true
-			}
-
-			// Detect if Render was overridden with pointer receiver
-			// If ptr has it but elem doesn't, AND this isn't *Tag or *Block, it's an override
-			if ptrHasRender && !elemHasRender && nodeType != reflect.TypeOf((*Tag)(nil)) && nodeType != reflect.TypeOf((*Block)(nil)) {
-				hasOwnRender = true
-			}
-
-			// Detect if RenderToOutputBuffer was overridden with pointer receiver
-			if ptrHasRTOB && !elemHasRTOB && nodeType != reflect.TypeOf((*Tag)(nil)) && nodeType != reflect.TypeOf((*Block)(nil)) {
-				hasOwnRTOB = true
-			}
-		}
-
-		// Decision logic from plan:
-		// 1. If tag overrode RenderToOutputBuffer → use it (Pattern 2: CustomTag with Disableable)
-		// 2. Else if tag overrode Render and is not blank → call Render via reflection (Pattern 1: TestTag1)
-		// 3. Else → use inherited RenderToOutputBuffer (Pattern 3: standard tags)
-
-		if hasOwnRTOB {
-			// Pattern 2: Tag has its own RenderToOutputBuffer
-			if profiler {
-				ctx.Profiler().ProfileNode(ctx.TemplateName(), code, lineNumber, func() {
-					renderable.RenderToOutputBuffer(context, output)
-				})
-			} else {
-				renderable.RenderToOutputBuffer(context, output)
-			}
-			return
-		}
-
-		// Check if blank
-		isBlank := false
-		if blanker, ok := node.(interface{ Blank() bool }); ok {
-			isBlank = blanker.Blank()
-		}
-
-		if hasOwnRender && !isBlank {
-			// Pattern 1: Tag only overrode Render(), call it via reflection
-			if nodeValue.Kind() == reflect.Ptr {
-				renderMethod := nodeValue.MethodByName("Render")
-				if renderMethod.IsValid() {
-					results := renderMethod.Call([]reflect.Value{reflect.ValueOf(context)})
-					if len(results) > 0 {
-						renderResult := results[0].String()
-						if renderResult != "" {
-							if profiler {
-								ctx.Profiler().ProfileNode(ctx.TemplateName(), code, lineNumber, func() {
-									*output += renderResult
-								})
-							} else {
-								*output += renderResult
-							}
-							return
-						}
-					}
+// newTag builds the tag a template names with its constructor. An error of
+// the constructor is a parse error, raised as the parser raises them, or in
+// warn mode a warning, and newTag returns nil. A constructor that returns
+// neither a tag (nil, or a nil pointer) nor an error gives a syntax error of
+// its own.
+func newTag(ctor TagConstructor, tagName, markup string, parseContext ParseContextInterface) Node {
+	var tag Node
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				e, isErr := r.(error)
+				if !isErr || parseContext.ErrorMode() != ErrorModeWarn {
+					panic(r)
 				}
+				err = e
 			}
-		}
-
-		// Pattern 3: Use inherited RenderToOutputBuffer
-		if profiler {
-			ctx.Profiler().ProfileNode(ctx.TemplateName(), code, lineNumber, func() {
-				renderable.RenderToOutputBuffer(context, output)
-			})
-		} else {
-			renderable.RenderToOutputBuffer(context, output)
-		}
-		return
+		}()
+		tag, err = ctor(tagName, markup, parseContext)
+	}()
+	if err == nil && isNilNode(tag) {
+		err = NewSyntaxError("the constructor of the " + tagName + " tag returned no tag")
 	}
+	if err != nil {
+		if parseContext.ErrorMode() != ErrorModeWarn {
+			panic(err)
+		}
+		parseContext.AddWarning(err)
+		return nil
+	}
+	return tag
+}
+
+// isNilNode reports whether tag is no tag: nil, or a nil pointer in the
+// interface, which a constructor that returns a *T gives.
+func isNilNode(tag Node) bool {
+	if tag == nil {
+		return true
+	}
+	v := reflect.ValueOf(tag)
+	return v.Kind() == reflect.Ptr && v.IsNil()
+}
+
+// renderNode renders one node that is not raw text. An error in the node is
+// handled as Ruby's rescue_render_node does.
+func (bb *BlockBody) renderNode(context TagContext, output *OutputBuffer, node interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			rescueRenderNode(context, output, node, r, bb.blankErrorText)
+		}
+	}()
+	node.(Node).RenderToOutput(context, output)
 }
 
 // RemoveBlankStrings removes blank strings from the block body.
@@ -632,6 +431,18 @@ func (bb *BlockBody) RemoveBlankStrings() {
 
 // parseLiquidTag parses a liquid tag by creating a new tokenizer for the markup
 // and recursively parsing it as if it were inside a liquid tag context.
+// parseNestedLiquidTag parses a liquid tag inside another one. Each nested
+// liquid tag parses the rest of the markup again: it counts as a level of
+// blocks, whose depth bounds them, so that the cost stays linear.
+func (bb *BlockBody) parseNestedLiquidTag(markup string, parseContext ParseContextInterface) {
+	if parseContext.Depth() >= blockMaxDepth {
+		panic(NewStackLevelError("Nesting too deep"))
+	}
+	parseContext.IncrementDepth()
+	defer parseContext.DecrementDepth()
+	bb.parseLiquidTag(markup, parseContext)
+}
+
 func (bb *BlockBody) parseLiquidTag(markup string, parseContext ParseContextInterface) {
 	// Create a new tokenizer with for_liquid_tag: true
 	lineNumber := parseContext.LineNumber()
@@ -643,7 +454,7 @@ func (bb *BlockBody) parseLiquidTag(markup string, parseContext ParseContextInte
 			// Unknown tag in liquid tag - raise error
 			// This would call Block.raise_unknown_tag in Ruby
 			// For now, we'll raise a syntax error
-			panic(NewSyntaxError("Unknown tag '" + endTagName + "' in liquid tag"))
+			panic(NewSyntaxErrorFor(parseContext, "errors.syntax.unknown_tag", map[string]interface{}{"tag": endTagName}))
 		}
 		return true
 	}); err != nil {

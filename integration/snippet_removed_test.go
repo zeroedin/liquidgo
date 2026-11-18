@@ -1,18 +1,16 @@
 package integration
 
 import (
-	"strings"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // TestSnippetTagReturnsUnknownTagError verifies that the snippet tag
 // was removed in Shopify Liquid v5.11.0 and now returns an unknown tag error.
 func TestSnippetTagReturnsUnknownTagError(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	template := `{% snippet foo %}content{% endsnippet %}`
 	_, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{
@@ -22,7 +20,7 @@ func TestSnippetTagReturnsUnknownTagError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error for unknown 'snippet' tag, but parsing succeeded")
 	}
-	if !strings.Contains(err.Error(), "unknown_tag") && !strings.Contains(err.Error(), "unknown tag") {
-		t.Errorf("Expected 'unknown tag' or 'unknown_tag' error, got: %v", err)
+	if err.Error() != "Liquid syntax error: Unknown tag 'snippet'" {
+		t.Errorf("Expected Ruby's error, Liquid syntax error: Unknown tag 'snippet', got: %v", err)
 	}
 }

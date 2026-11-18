@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var rawSyntax = regexp.MustCompile(`^\s*$`)
@@ -19,13 +19,7 @@ type RawTag struct {
 func NewRawTag(tagName, markup string, parseContext liquid.ParseContextInterface) (*RawTag, error) {
 	// Validate markup is empty
 	if !rawSyntax.MatchString(markup) {
-		var locale *liquid.I18n
-		if pc, ok := parseContext.(*liquid.ParseContext); ok {
-			locale = pc.Locale()
-			msg := locale.Translate("errors.syntax.tag_unexpected_args", map[string]interface{}{"tag": tagName})
-			return nil, liquid.NewSyntaxError(msg)
-		}
-		return nil, liquid.NewSyntaxError("Liquid syntax error: tag unexpected args")
+		return nil, liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.tag_unexpected_args", map[string]interface{}{"tag": tagName})
 	}
 
 	block := liquid.NewBlock(tagName, markup, parseContext)
@@ -37,47 +31,31 @@ func NewRawTag(tagName, markup string, parseContext liquid.ParseContextInterface
 	}, nil
 }
 
-// Parse parses the raw tag body.
+// Parse parses the raw tag body, up to the first tag named endraw, as Ruby: text before
+// that tag in the same token belongs to the body, and the body is kept as written.
 func (r *RawTag) Parse(tokenizer *liquid.Tokenizer) error {
-	r.body = ""
+	var body strings.Builder
 	blockDelimiter := r.BlockDelimiter()
 
-	for {
+	for !tokenizer.Exhausted() {
 		token := tokenizer.Shift()
-		if token == "" {
-			// Tag never closed
-			return liquid.NewSyntaxError("Liquid syntax error: " + r.BlockName() + " tag was never closed")
+		if before, tagName, ok := liquid.MatchTagPossiblyInvalid(token); ok && tagName == blockDelimiter {
+			r.ParseContext().SetTrimWhitespace(liquid.TrimsAfter(token))
+			body.WriteString(before)
+			r.body = body.String()
+			return nil
 		}
-
-		// Check if this is the end tag
-		if strings.HasPrefix(token, "{%") && strings.HasSuffix(token, "%}") {
-			// Extract tag name from token
-			// Token format: {% endraw %} or {%- endraw -%}
-			tokenContent := strings.TrimPrefix(token, "{%")
-			tokenContent = strings.TrimSuffix(tokenContent, "%}")
-			tokenContent = strings.TrimSpace(tokenContent)
-
-			// Check if it matches the block delimiter
-			if tokenContent == blockDelimiter || strings.HasPrefix(tokenContent, blockDelimiter+" ") {
-				// This is the end tag
-				// Check for whitespace control
-				if len(token) > 2 && token[2] == '-' {
-					// Trim whitespace from body
-					r.body = strings.TrimRight(r.body, " \t\n\r")
-				}
-				return nil
-			}
-		}
-
-		if token != "" {
-			r.body += token
-		}
+		body.WriteString(token)
 	}
+
+	// Tag never closed
+	r.body = body.String()
+	return liquid.NewSyntaxErrorFor(r.ParseContext(), "errors.syntax.tag_never_closed", map[string]interface{}{"block_name": r.BlockName()})
 }
 
-// RenderToOutputBuffer renders the raw tag.
-func (r *RawTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
-	*output += r.body
+// RenderToOutput renders the raw tag.
+func (r *RawTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
+	output.WriteString(r.body)
 }
 
 // Nodelist returns the nodelist (just the body as a string).

@@ -6,14 +6,10 @@ A Go implementation of Shopify's Liquid template engine with full feature parity
 
 ```
 liquidgo/
-├── .cursorrules              # AI agent instructions
-├── .cursor/
-│   └── instructions.md       # Detailed implementation guide
 ├── IMPLEMENTATION.md         # This file
 ├── liquid/                   # Main Go package (maps to lib/liquid/)
 │   ├── tags/                # Tag implementations (maps to lib/liquid/tags/)
-│   ├── tag/                 # Tag base classes (maps to lib/liquid/tag/)
-│   └── profiler/            # Profiler (maps to lib/liquid/profiler/)
+│   └── tag/                 # Tag base classes (maps to lib/liquid/tag/)
 ├── reference-liquid/         # Cloned Ruby repository for reference
 └── README.md                 # Project README
 ```
@@ -193,7 +189,6 @@ Ruby release 5.10.0 adds inline snippets:
 ### Tags
 
 - `liquid/tags/` - All tag implementations
-- See `.cursor/instructions.md` for complete mapping
 
 ### Tests
 
@@ -205,7 +200,6 @@ Ruby release 5.10.0 adds inline snippets:
 - **Ruby Implementation**: https://github.com/Shopify/liquid
 - **Liquid Documentation**: https://shopify.github.io/liquid/
 - **Reference Code**: `reference-liquid/` directory
-- **Detailed Guide**: `.cursor/instructions.md`
 
 ## Contributing
 

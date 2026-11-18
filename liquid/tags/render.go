@@ -1,11 +1,10 @@
 package tags
 
 import (
-	"reflect"
 	"regexp"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var (
@@ -47,7 +46,7 @@ func NewRenderTag(tagName, markup string, parseContext liquid.ParseContextInterf
 func (r *RenderTag) parseMarkup(markup string, parseContext liquid.ParseContextInterface) error {
 	matches := renderSyntax.FindStringSubmatch(markup)
 	if len(matches) == 0 {
-		return liquid.NewSyntaxError("invalid render tag syntax")
+		return liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.render", nil)
 	}
 
 	// Template name
@@ -88,8 +87,8 @@ func (r *RenderTag) Parse(tokenizer *liquid.Tokenizer) error {
 	return nil
 }
 
-// RenderToOutputBuffer renders the render tag.
-func (r *RenderTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the render tag.
+func (r *RenderTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	// Evaluate template name
 	template := context.Evaluate(r.templateNameExpr)
 
@@ -97,7 +96,7 @@ func (r *RenderTag) RenderToOutputBuffer(context liquid.TagContext, output *stri
 	ctx, ok := context.(*liquid.Context)
 	if !ok {
 		errorMsg := context.HandleError(liquid.NewInternalError("context is not a liquid.Context"), r.LineNumber())
-		*output += errorMsg
+		output.WriteString(errorMsg)
 		return
 	}
 
@@ -109,21 +108,15 @@ func (r *RenderTag) RenderToOutputBuffer(context liquid.TagContext, output *stri
 	templateNameStr, ok := template.(string)
 	if !ok {
 		errorMsg := context.HandleError(liquid.NewArgumentError("render tag requires a string template name"), r.LineNumber())
-		*output += errorMsg
+		output.WriteString(errorMsg)
 		return
 	}
 
 	// String template name - load from cache
-	partialInterface, err := liquid.LoadPartial(templateNameStr, context, r.ParseContext())
+	partial, err := liquid.LoadPartial(templateNameStr, context, r.ParseContext())
 	if err != nil {
 		errorMsg := context.HandleError(err, r.LineNumber())
-		*output += errorMsg
-		return
-	}
-	partial, ok = partialInterface.(*liquid.Template)
-	if !ok {
-		errorMsg := context.HandleError(liquid.NewFileSystemError("partial is not a template"), r.LineNumber())
-		*output += errorMsg
+		output.WriteString(errorMsg)
 		return
 	}
 	templateName = partial.Name()
@@ -160,7 +153,7 @@ func (r *RenderTag) RenderToOutputBuffer(context liquid.TagContext, output *stri
 		}
 
 		// Render partial
-		partial.RenderToOutputBuffer(innerContext, output)
+		partial.RenderToOutput(innerContext, output)
 
 		// Increment forloop if provided
 		if forloop != nil {
@@ -195,11 +188,10 @@ func (r *RenderTag) RenderToOutputBuffer(context liquid.TagContext, output *stri
 		} else if variable != nil {
 			// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
 			// This matches Ruby's duck-typing behavior: arrays respond to iteration
-			v := reflect.ValueOf(variable)
-			if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-				forloop := liquid.NewForloopDrop(templateName, v.Len(), nil)
-				for i := 0; i < v.Len(); i++ {
-					renderPartialFunc(v.Index(i).Interface(), forloop)
+			if items, ok := liquid.SliceItems(variable); ok {
+				forloop := liquid.NewForloopDrop(templateName, len(items), nil)
+				for _, item := range items {
+					renderPartialFunc(item, forloop)
 				}
 			} else {
 				// Not iterable, render once with variable

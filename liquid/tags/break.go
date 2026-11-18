@@ -1,7 +1,7 @@
 package tags
 
 import (
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 // BreakTag represents a break tag that stops a for loop from iterating.
@@ -16,8 +16,8 @@ func NewBreakTag(tagName, markup string, parseContext liquid.ParseContextInterfa
 	}
 }
 
-// RenderToOutputBuffer renders the break tag by pushing a break interrupt.
-func (b *BreakTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the break tag by pushing a break interrupt.
+func (b *BreakTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	interrupt := liquid.NewBreakInterrupt()
 	context.PushInterrupt(interrupt)
 }

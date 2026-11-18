@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 // mapFileSystem for testing
@@ -106,8 +106,7 @@ func TestRenderTagWithParameters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := liquid.NewEnvironment()
-			RegisterStandardTags(env)
+			env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 			// Create filesystem with partial
 			fs := &mapFileSystem{
@@ -129,7 +128,7 @@ func TestRenderTagWithParameters(t *testing.T) {
 			tmpl.Registers()["file_system"] = fs
 
 			// Render
-			output := tmpl.Render(tt.data, nil)
+			output := renderRuby(tmpl, tt.data, nil)
 			output = strings.TrimSpace(output)
 
 			if output != tt.expected {
@@ -141,8 +140,7 @@ func TestRenderTagWithParameters(t *testing.T) {
 
 // TestRenderTagParameterIsolation verifies that render creates an isolated scope
 func TestRenderTagParameterIsolation(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 	// Parent context has widget='blog'
 	// Render passes widget='newsletter'
@@ -165,7 +163,7 @@ func TestRenderTagParameterIsolation(t *testing.T) {
 
 	tmpl.Registers()["file_system"] = fs
 
-	output := tmpl.Render(map[string]interface{}{}, nil)
+	output := renderRuby(tmpl, map[string]interface{}{}, nil)
 
 	// Expected: "newsletter-blog" where:
 	// - "newsletter-" is from the partial (widget parameter passed, title is nil/empty)
@@ -181,8 +179,7 @@ func TestRenderTagParameterIsolation(t *testing.T) {
 
 // TestRenderTagWithForLoop verifies parameters work with for loops
 func TestRenderTagWithForLoop(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 	template := `{% render 'item' for items, index: forloop.index %}`
 	partial := `{{ item }} (#{{ index }})`
@@ -202,7 +199,7 @@ func TestRenderTagWithForLoop(t *testing.T) {
 
 	tmpl.Registers()["file_system"] = fs
 
-	output := tmpl.Render(map[string]interface{}{
+	output := renderRuby(tmpl, map[string]interface{}{
 		"items": []interface{}{"A", "B", "C"},
 	}, nil)
 
@@ -214,8 +211,7 @@ func TestRenderTagWithForLoop(t *testing.T) {
 
 // TestRenderTagOriginalIssue tests the exact case from the bug report
 func TestRenderTagOriginalIssue(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 	template := `<div>{% render 'shared', widget: 'newsletter' %}</div>`
 	partial := `{%- if widget == 'newsletter' -%}<div class="newsletter">Subscribe!</div>{%- endif -%}`
@@ -235,7 +231,7 @@ func TestRenderTagOriginalIssue(t *testing.T) {
 
 	tmpl.Registers()["file_system"] = fs
 
-	output := tmpl.Render(map[string]interface{}{}, nil)
+	output := renderRuby(tmpl, map[string]interface{}{}, nil)
 
 	expected := `<div><div class="newsletter">Subscribe!</div></div>`
 	if output != expected {

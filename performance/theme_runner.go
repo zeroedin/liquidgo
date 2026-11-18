@@ -1,13 +1,14 @@
 package performance
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
-	"github.com/Notifuse/liquidgo/performance/shopify"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/performance/shopify"
 )
 
 // FileSystem implements liquid.FileSystem for template loading
@@ -53,12 +54,13 @@ type ThemeRunner struct {
 // NewThemeRunner creates a new ThemeRunner instance
 // Will load all templates into memory to avoid profiling IO
 func NewThemeRunner() (*ThemeRunner, error) {
-	// Create environment with standard tags
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-
-	// Register Shopify custom tags and filters
-	shopify.RegisterAll(env)
+	// the standard tags, and the custom tags and filters of Shopify themes
+	config := liquid.EnvironmentConfig{Tags: tags.Standard()}
+	shopify.AddTo(&config)
+	env, err := liquid.NewEnvironment(config)
+	if err != nil {
+		return nil, err
+	}
 
 	runner := &ThemeRunner{
 		env:   env,
@@ -188,7 +190,8 @@ func (tr *ThemeRunner) Render() error {
 	for _, test := range tr.compiledTests {
 		if test.layout != nil {
 			// Render template first
-			output := test.tmpl.Render(test.assigns, nil)
+			res, _ := test.tmpl.Render(context.Background(), test.assigns)
+			output := res.Output
 
 			// Set content_for_layout
 			layoutAssigns := make(map[string]interface{})
@@ -198,9 +201,9 @@ func (tr *ThemeRunner) Render() error {
 			layoutAssigns["content_for_layout"] = output
 
 			// Render layout
-			test.layout.Render(layoutAssigns, nil)
+			_, _ = test.layout.Render(context.Background(), layoutAssigns)
 		} else {
-			test.tmpl.Render(test.assigns, nil)
+			_, _ = test.tmpl.Render(context.Background(), test.assigns)
 		}
 	}
 	return nil
@@ -279,7 +282,8 @@ func (tr *ThemeRunner) compileAndRender(templateSource, layoutSource string, ass
 
 	if compiled.layout != nil {
 		// Render template
-		output := compiled.tmpl.Render(compiled.assigns, nil)
+		res, _ := compiled.tmpl.Render(context.Background(), compiled.assigns)
+		output := res.Output
 
 		// Set content_for_layout
 		layoutAssigns := make(map[string]interface{})
@@ -289,9 +293,9 @@ func (tr *ThemeRunner) compileAndRender(templateSource, layoutSource string, ass
 		layoutAssigns["content_for_layout"] = output
 
 		// Render layout
-		compiled.layout.Render(layoutAssigns, nil)
+		_, _ = compiled.layout.Render(context.Background(), layoutAssigns)
 	} else {
-		compiled.tmpl.Render(compiled.assigns, nil)
+		_, _ = compiled.tmpl.Render(context.Background(), compiled.assigns)
 	}
 
 	return nil

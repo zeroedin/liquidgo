@@ -1,7 +1,7 @@
 package tags
 
 import (
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 // UnlessTag represents an unless block tag (opposite of if).
@@ -35,8 +35,8 @@ func NewUnlessTag(tagName, markup string, parseContext liquid.ParseContextInterf
 	}, nil
 }
 
-// RenderToOutputBuffer renders the unless tag (negated if).
-func (u *UnlessTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the unless tag (negated if).
+func (u *UnlessTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	// Get the underlying Context which implements ConditionContext
 	ctx := context.Context().(*liquid.Context)
 
@@ -45,30 +45,20 @@ func (u *UnlessTag) RenderToOutputBuffer(context liquid.TagContext, output *stri
 	for i, block := range u.Blocks() {
 		result, err := block.Evaluate(ctx)
 		if err != nil {
-			// Handle error
-			errorMsg := context.HandleError(err, nil)
-			*output += errorMsg
-			return
+			liquid.Raise(err) // as Ruby: the block body handles it
 		}
 
-		// Convert result to liquid value
-		resultVal := liquid.ToLiquidValue(result)
-
-		// For the first block (unless), negate the condition
-		// For elsif/else blocks, use normal logic
-		shouldRender := false
+		// The first block (unless) renders when its condition does not
+		// hold, an elsif or an else block when its condition holds
+		shouldRender := result
 		if i == 0 {
-			// First block: render if condition is false
-			shouldRender = (resultVal == nil || resultVal == false || resultVal == "")
-		} else {
-			// Elsif/else blocks: render if condition is true
-			shouldRender = (resultVal != nil && resultVal != false && resultVal != "")
+			shouldRender = !result
 		}
 
 		if shouldRender {
 			// Render the attachment
 			if attachment, ok := block.Attachment().(*liquid.BlockBody); ok {
-				attachment.RenderToOutputBuffer(context, output)
+				attachment.RenderToOutput(context, output)
 			}
 			return
 		}

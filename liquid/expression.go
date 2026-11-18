@@ -1,10 +1,10 @@
 package liquid
 
 import (
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 var (
@@ -12,10 +12,6 @@ var (
 	expressionIntegerRegex = regexp.MustCompile(`^(-?\d+)$`)
 	expressionFloatRegex   = regexp.MustCompile(`^(-?\d+)\.\d+$`)
 )
-
-// globalExprCache provides thread-safe caching of parsed expressions across templates.
-// Optimization: Avoids re-parsing the same expressions repeatedly when cache parameter is nil.
-var globalExprCache sync.Map // map[string]interface{}
 
 // Expression literals map
 var expressionLiterals = map[string]interface{}{
@@ -31,27 +27,30 @@ var expressionLiterals = map[string]interface{}{
 // Expression represents a parsed Liquid expression.
 type Expression struct{}
 
-// SafeParse parses an expression from a parser.
-func SafeParse(parser *Parser, ss *StringScanner, cache map[string]interface{}) interface{} {
-	expr, err := parser.Expression()
-	if err != nil {
-		return nil
-	}
-	return Parse(expr, ss, cache)
+// rubyStrip is Ruby's String#strip: it removes the ASCII whitespace and the
+// NUL bytes at both ends, and no other character (Go's strings.TrimSpace also
+// removes Unicode spaces and keeps NUL bytes).
+func rubyStrip(s string) string {
+	return strings.Trim(s, " \t\n\v\f\r\x00")
 }
 
-// Parse parses a markup string into an expression value.
-// Optimization: Uses global cache when local cache is nil for better performance across templates.
+// Parse parses a markup string into an expression value. cache, when set,
+// keeps the expressions of one parse; nothing is kept across parses, so that
+// the memory a template takes goes with it.
 func Parse(markup string, ss *StringScanner, cache map[string]interface{}) interface{} {
 	if markup == "" {
 		return nil
 	}
 
-	markup = strings.TrimSpace(markup)
+	markup = rubyStrip(markup)
 
 	// Handle quoted strings (fast path, don't cache)
 	if (strings.HasPrefix(markup, `"`) && strings.HasSuffix(markup, `"`)) ||
 		(strings.HasPrefix(markup, `'`) && strings.HasSuffix(markup, `'`)) {
+		// A lone quote is an empty string, as Ruby's markup[1..-2]
+		if len(markup) < 2 {
+			return ""
+		}
 		return markup[1 : len(markup)-1]
 	}
 
@@ -70,14 +69,7 @@ func Parse(markup string, ss *StringScanner, cache map[string]interface{}) inter
 		return result
 	}
 
-	// Use global cache when local cache is nil (cross-template caching)
-	if cached, ok := globalExprCache.Load(markup); ok {
-		return cached
-	}
-
-	result := innerParse(markup, ss, nil)
-	globalExprCache.Store(markup, result)
-	return result
+	return innerParse(markup, ss, nil)
 }
 
 func innerParse(markup string, ss *StringScanner, cache map[string]interface{}) interface{} {
@@ -104,6 +96,10 @@ func parseNumber(markup string, ss *StringScanner) interface{} {
 		if val, err := strconv.Atoi(matches[1]); err == nil {
 			return val
 		}
+		// beyond an int, an integer stays exact, as Ruby's Integer
+		if val, ok := new(big.Int).SetString(matches[1], 10); ok {
+			return val
+		}
 	}
 
 	if matches := expressionFloatRegex.FindStringSubmatch(markup); len(matches) > 0 {
@@ -120,10 +116,10 @@ func parseNumber(markup string, ss *StringScanner) interface{} {
 	}
 
 	// Check first byte
-	byte := ss.PeekByte()
-	if byte == 0 {
+	if ss.EOS() {
 		return nil
 	}
+	byte := ss.PeekByte()
 
 	const (
 		dash = '-'
@@ -141,7 +137,7 @@ func parseNumber(markup string, ss *StringScanner) interface{} {
 		ss.ScanByte() // consume dash
 		peekedByte := ss.PeekByte()
 		// If it starts with a dash, the next byte must be a digit
-		if peekedByte == 0 || peekedByte < zero || peekedByte > nine {
+		if ss.EOS() || peekedByte < zero || peekedByte > nine {
 			return nil
 		}
 		ss.SetPos(ss.Pos() - 1) // back up
@@ -151,8 +147,8 @@ func parseNumber(markup string, ss *StringScanner) interface{} {
 	numEndPos := -1
 
 	for {
-		byte := ss.ScanByte()
-		if byte == 0 {
+		byte, ok := ss.next()
+		if !ok { // the end of the markup; a NUL byte is a byte, which no number has
 			break
 		}
 
@@ -179,19 +175,28 @@ func parseNumber(markup string, ss *StringScanner) interface{} {
 		numEndPos = len(markup)
 	}
 
+	// as Ruby, the number is String#to_f of the markup up to its end: the
+	// float it starts with ("1..3" is 1.0, "1.2.3" is 1.2)
 	if numEndPos >= 0 {
 		// Number ends with a number "123.123"
-		numStr := markup[0:numEndPos]
-		if val, err := strconv.ParseFloat(numStr, 64); err == nil {
-			return val
-		}
+		return rubyToF(markup[0:numEndPos])
 	} else if firstDotPos >= 0 {
 		// Number ends with a dot "123."
-		numStr := markup[0:firstDotPos]
-		if val, err := strconv.ParseFloat(numStr, 64); err == nil {
-			return val
-		}
+		return rubyToF(markup[0:firstDotPos])
 	}
 
 	return nil
+}
+
+// rubyLeadingFloat is the float a string starts with, as Ruby's String#to_f
+// reads it.
+var rubyLeadingFloat = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?`)
+
+// rubyToF is Ruby's String#to_f for a string that starts with a number.
+func rubyToF(s string) interface{} {
+	val, err := strconv.ParseFloat(rubyLeadingFloat.FindString(s), 64)
+	if err != nil {
+		return nil
+	}
+	return val
 }
