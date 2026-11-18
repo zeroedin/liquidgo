@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"math"
 	"testing"
 
 	"github.com/Notifuse/liquidgo/v5/liquid"
@@ -134,8 +135,10 @@ func (o *ObjectWrapperDrop) Value() interface{} {
 func assignScoreOf(obj interface{}) int {
 	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	drop := NewObjectWrapperDrop(obj)
-	// Create resource limits for tracking assign score
-	rl := liquid.ResourceLimitsConfig{}
+	// An assign is scored only when a limit is set (the fork's difference, #7):
+	// set one that is never reached.
+	limit := math.MaxInt
+	rl := liquid.ResourceLimitsConfig{AssignScoreLimit: &limit}
 	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"drop": drop}},

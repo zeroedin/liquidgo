@@ -256,8 +256,9 @@ func TestResourceLimitsHashInTemplateGetsUpdatedEvenIfNoLimitsAreSet(t *testing.
 	}
 
 	renderRubyBang(tmpl, nil, &rubyOptions{})
-	if rubyLimits(tmpl).AssignScore() <= 0 {
-		t.Error("Expected assign_score to be greater than 0")
+	// An assign is not scored when no limit is set (the fork's difference, #7).
+	if rubyLimits(tmpl).AssignScore() != 0 {
+		t.Errorf("Expected assign_score to be 0 with no limit set, got %d", rubyLimits(tmpl).AssignScore())
 	}
 	if rubyLimits(tmpl).RenderScore() <= 0 {
 		t.Error("Expected render_score to be greater than 0")
@@ -376,8 +377,9 @@ func TestDefaultResourceLimitsUnaffectedByRenderWithContext(t *testing.T) {
 	}
 
 	renderRubyBang(tmpl, ctx, &rubyOptions{})
-	if ctx.ResourceLimits().AssignScore() <= 0 {
-		t.Error("Expected assign_score to be greater than 0")
+	// An assign is not scored when no limit is set (the fork's difference, #7).
+	if ctx.ResourceLimits().AssignScore() != 0 {
+		t.Errorf("Expected assign_score to be 0 with no limit set, got %d", ctx.ResourceLimits().AssignScore())
 	}
 	if ctx.ResourceLimits().RenderScore() <= 0 {
 		t.Error("Expected render_score to be greater than 0")
