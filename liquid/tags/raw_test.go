@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 func TestRawTag(t *testing.T) {
@@ -29,7 +29,7 @@ func TestRawTag(t *testing.T) {
 
 	ctx := liquid.NewContext()
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Raw tag should output the content as-is (without the endraw tag)
 	if !strings.Contains(output, "Hello") {

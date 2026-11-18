@@ -3,8 +3,8 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // TestBlockTag is a simple block tag for testing
@@ -12,13 +12,15 @@ type TestBlockTag struct {
 	*liquid.Block
 }
 
-func NewTestBlockTag(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
+func NewTestBlockTag(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
 	block := liquid.NewBlock(tagName, markup, parseContext)
 	return &TestBlockTag{Block: block}, nil
 }
 
-func (t *TestBlockTag) Render(ctx liquid.TagContext) string {
-	return "hello"
+// RenderToOutput is Ruby's render of the test, which returns 'hello': a tag
+// has one render method, liquid.Node's.
+func (t *TestBlockTag) RenderToOutput(_ liquid.TagContext, output *liquid.OutputBuffer) {
+	output.WriteString("hello")
 }
 
 func TestUnexpectedEndTag(t *testing.T) {
@@ -29,9 +31,9 @@ func TestUnexpectedEndTag(t *testing.T) {
 }
 
 func TestWithCustomTag(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	env.RegisterTag("testtag", tags.TagConstructor(NewTestBlockTag))
+	envTags := tags.Standard()
+	envTags["testtag"] = tags.TagConstructor(NewTestBlockTag)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: envTags})
 
 	tmpl, err := liquid.ParseTemplate(`{% testtag %} {% endtesttag %}`, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
@@ -43,23 +45,23 @@ func TestWithCustomTag(t *testing.T) {
 }
 
 func TestCustomBlockTagsHaveADefaultRenderToOutputBufferMethodForBackwardsCompatibility(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	env.RegisterTag("blabla", tags.TagConstructor(NewTestBlockTag))
+	envTags := tags.Standard()
+	envTags["blabla"] = tags.TagConstructor(NewTestBlockTag)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: envTags})
 
 	tmpl, err := liquid.ParseTemplate(`{% blabla %} bla {% endblabla %}`, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	result := tmpl.Render(nil, &liquid.RenderOptions{})
+	result := renderRuby(tmpl, nil, &rubyOptions{})
 	if result != "hello" {
 		t.Errorf("Expected 'hello', got %q", result)
 	}
 
 	// Test with output buffer
 	var buf string
-	output := tmpl.Render(nil, &liquid.RenderOptions{Output: &buf})
+	output := renderRuby(tmpl, nil, &rubyOptions{Output: &buf})
 	if output != "hello" {
 		t.Errorf("Expected 'hello', got %q", output)
 	}
@@ -68,25 +70,25 @@ func TestCustomBlockTagsHaveADefaultRenderToOutputBufferMethodForBackwardsCompat
 	}
 
 	// Test with inheritance - TestBlockTag2 extends TestBlockTag1
-	env2 := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env2)
-	env2.RegisterTag("blabla", tags.TagConstructor(func(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
+	env2Tags := tags.Standard()
+	env2Tags["blabla"] = tags.TagConstructor(func(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
 		block1, _ := NewTestBlockTag(tagName, markup, parseContext)
 		return &TestBlockTag2{TestBlockTag: block1.(*TestBlockTag)}, nil
-	}))
+	})
+	env2 := mustEnv(liquid.EnvironmentConfig{Tags: env2Tags})
 
 	tmpl2, err := liquid.ParseTemplate(`{% blabla %} foo {% endblabla %}`, &liquid.TemplateOptions{Environment: env2})
 	if err != nil {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	result = tmpl2.Render(nil, &liquid.RenderOptions{})
+	result = renderRuby(tmpl2, nil, &rubyOptions{})
 	if result != "foohellobar" {
 		t.Errorf("Expected 'foohellobar', got %q", result)
 	}
 
 	var buf2 string
-	output = tmpl2.Render(nil, &liquid.RenderOptions{Output: &buf2})
+	output = renderRuby(tmpl2, nil, &rubyOptions{Output: &buf2})
 	if output != "foohellobar" {
 		t.Errorf("Expected 'foohellobar', got %q", output)
 	}
@@ -100,9 +102,11 @@ type TestBlockTag2 struct {
 	*TestBlockTag
 }
 
-func (t *TestBlockTag2) Render(ctx liquid.TagContext) string {
+func (t *TestBlockTag2) RenderToOutput(ctx liquid.TagContext, output *liquid.OutputBuffer) {
 	// Ruby: 'foo' + super + 'bar' where super calls parent's render
 	// Parent (TestBlockTag) returns "hello"
 	// So result is "foo" + "hello" + "bar" = "foohellobar"
-	return "foo" + t.TestBlockTag.Render(ctx) + "bar"
+	output.WriteString("foo")
+	t.TestBlockTag.RenderToOutput(ctx, output)
+	output.WriteString("bar")
 }

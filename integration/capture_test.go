@@ -3,8 +3,8 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 func TestCapturesBlockContentInVariable(t *testing.T) {
@@ -41,14 +41,13 @@ func TestAssigningFromCapture(t *testing.T) {
 }
 
 func TestIncrementAssignScoreByBytesNotCharacters(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env) // Register tags for parsing
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	tmpl, err := liquid.ParseTemplate(`{% capture foo %}すごい{% endcapture %}`, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
-	tmpl.RenderBang(nil, &liquid.RenderOptions{})
-	if tmpl.ResourceLimits().AssignScore() != 9 {
-		t.Errorf("Expected assign_score 9, got %d", tmpl.ResourceLimits().AssignScore())
+	renderRubyBang(tmpl, nil, &rubyOptions{})
+	if rubyLimits(tmpl).AssignScore() != 9 {
+		t.Errorf("Expected assign_score 9, got %d", rubyLimits(tmpl).AssignScore())
 	}
 }

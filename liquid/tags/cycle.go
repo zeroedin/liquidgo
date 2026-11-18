@@ -1,16 +1,15 @@
 package tags
 
 import (
-	"reflect"
 	"regexp"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var (
 	cycleSimpleSyntax   = regexp.MustCompile(`^` + liquid.QuotedFragment.String())
-	cycleNamedSyntax    = regexp.MustCompile(`^(` + liquid.QuotedFragment.String() + `)\s*\:\s*(.*)`)
+	cycleNamedSyntax    = regexp.MustCompile(`(?s)^(` + liquid.QuotedFragment.String() + `)\s*\:\s*(.*)`)
 	cycleUnnamedPattern = regexp.MustCompile(`\w+:0x[0-9a-fA-F]{8}`)
 )
 
@@ -47,8 +46,12 @@ func (c *CycleTag) Named() bool {
 	return c.isNamed
 }
 
-// RenderToOutputBuffer renders the cycle tag.
-func (c *CycleTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the cycle tag.
+func (c *CycleTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
+	// A group without values ({% cycle a: %}) renders nothing, as in Ruby.
+	if len(c.variables) == 0 {
+		return
+	}
 	ctx := context.Context().(*liquid.Context)
 	registers := ctx.Registers()
 
@@ -84,31 +87,7 @@ func (c *CycleTag) RenderToOutputBuffer(context liquid.TagContext, output *strin
 	}
 	val := context.Evaluate(c.variables[iter])
 
-	// Convert to string
-	var valStr string
-	if arr, ok := val.([]interface{}); ok {
-		// Join array
-		parts := make([]string, len(arr))
-		for i, item := range arr {
-			parts[i] = liquid.ToS(item, nil)
-		}
-		valStr = strings.Join(parts, "")
-	} else if val != nil {
-		// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
-		v := reflect.ValueOf(val)
-		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-			parts := make([]string, v.Len())
-			for i := 0; i < v.Len(); i++ {
-				parts[i] = liquid.ToS(v.Index(i).Interface(), nil)
-			}
-			valStr = strings.Join(parts, "")
-		} else {
-			valStr = liquid.ToS(val, nil)
-		}
-	} else {
-		valStr = liquid.ToS(val, nil)
-	}
-	*output += valStr
+	liquid.WriteOutput(context, output, val)
 
 	// Increment iteration
 	iter++
@@ -137,13 +116,7 @@ func (c *CycleTag) parseMarkup(markup string, parseContext liquid.ParseContextIn
 	}
 
 	// Syntax error
-	var locale *liquid.I18n
-	if pc, ok := parseContext.(*liquid.ParseContext); ok {
-		locale = pc.Locale()
-		msg := locale.Translate("errors.syntax.cycle", map[string]interface{}{})
-		return liquid.NewSyntaxError(msg)
-	}
-	return liquid.NewSyntaxError("Liquid syntax error: cycle")
+	return liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.cycle", nil)
 }
 
 func (c *CycleTag) variablesFromString(markup string, parseContext liquid.ParseContextInterface) []interface{} {

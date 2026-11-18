@@ -14,7 +14,6 @@ type TagContext interface {
 	Evaluate(expr interface{}) interface{}
 	FindVariable(key string, raiseOnNotFound bool) interface{}
 	Invoke(method string, obj interface{}, args ...interface{}) interface{}
-	ApplyGlobalFilter(obj interface{}) interface{}
 	Interrupt() bool
 	PushInterrupt(interrupt interface{})
 	ResourceLimits() *ResourceLimits
@@ -91,22 +90,6 @@ func (t *Tag) Name() string {
 func (t *Tag) Parse(tokenizer *Tokenizer) error {
 	// Default implementation does nothing
 	return nil
-}
-
-// Render renders the tag (returns empty string by default).
-func (t *Tag) Render(context TagContext) string {
-	return ""
-}
-
-// RenderToOutputBuffer renders the tag to the output buffer.
-// Note: Due to Go's method dispatch with embedded pointers, this method cannot
-// automatically call overridden Render() methods in subtypes. Tags that override
-// Render() must be handled specially in the rendering code.
-func (t *Tag) RenderToOutputBuffer(context TagContext, output *string) {
-	renderResult := t.Render(context)
-	if renderResult != "" {
-		*output += renderResult
-	}
 }
 
 // Blank returns true if the tag is blank (produces no output).

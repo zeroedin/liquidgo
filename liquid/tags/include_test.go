@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 func TestIncludeTag(t *testing.T) {
@@ -81,21 +81,21 @@ func TestIncludeTagRenderToOutputBuffer(t *testing.T) {
 	ctx := liquid.NewContext()
 	var output string
 	// RenderToOutputBuffer should handle missing template gracefully
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	// Should handle missing template (error message or empty)
 	// Just verify no panic occurred
 	_ = output
 }
 
 func TestIncludeTagRenderToOutputBufferComprehensive(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 
 	// Test with non-string template name
 	tag2, _ := NewIncludeTag("include", "123", pc)
 	ctx2 := liquid.NewContext()
 	var output2 string
-	tag2.RenderToOutputBuffer(ctx2, &output2)
+	renderToString(tag2, ctx2, &output2)
 	// Should handle error gracefully
 	_ = output2
 
@@ -107,7 +107,7 @@ func TestIncludeTagRenderToOutputBufferComprehensive(t *testing.T) {
 	ctx3 := liquid.NewContext()
 	ctx3.Set("person", map[string]interface{}{"name": "Alice"})
 	var output3 string
-	tag3.RenderToOutputBuffer(ctx3, &output3)
+	renderToString(tag3, ctx3, &output3)
 	_ = output3
 
 	// Test with for clause
@@ -118,7 +118,7 @@ func TestIncludeTagRenderToOutputBufferComprehensive(t *testing.T) {
 	ctx4 := liquid.NewContext()
 	ctx4.Set("person", map[string]interface{}{"name": "Bob"})
 	var output4 string
-	tag4.RenderToOutputBuffer(ctx4, &output4)
+	renderToString(tag4, ctx4, &output4)
 	_ = output4
 
 	// Test with as clause
@@ -129,7 +129,7 @@ func TestIncludeTagRenderToOutputBufferComprehensive(t *testing.T) {
 	ctx5 := liquid.NewContext()
 	ctx5.Set("name", "Charlie")
 	var output5 string
-	tag5.RenderToOutputBuffer(ctx5, &output5)
+	renderToString(tag5, ctx5, &output5)
 	_ = output5
 
 	// Test with array variable
@@ -140,7 +140,7 @@ func TestIncludeTagRenderToOutputBufferComprehensive(t *testing.T) {
 	ctx6 := liquid.NewContext()
 	ctx6.Set("items", []interface{}{map[string]interface{}{"name": "Item1"}, map[string]interface{}{"name": "Item2"}})
 	var output6 string
-	tag6.RenderToOutputBuffer(ctx6, &output6)
+	renderToString(tag6, ctx6, &output6)
 	_ = output6
 }
 
@@ -158,7 +158,7 @@ func TestIncludeTagTemplateNameExpr(t *testing.T) {
 }
 
 func TestIncludeTagRenderToOutputBufferWithNestedPath(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 
 	// Create a file system with a template
@@ -181,8 +181,6 @@ func TestIncludeTagRenderToOutputBufferWithNestedPath(t *testing.T) {
 	// Set up context with file system
 	registers := liquid.NewRegisters(nil)
 	registers.Set("file_system", fs)
-	registers.Set("cached_partials", make(map[string]interface{}))
-	registers.Set("template_factory", liquid.NewTemplateFactory())
 	ctx := liquid.BuildContext(liquid.ContextConfig{Registers: registers})
 
 	// Create include tag with nested path (no alias - should use last part "partial")
@@ -193,7 +191,7 @@ func TestIncludeTagRenderToOutputBufferWithNestedPath(t *testing.T) {
 
 	ctx.Set("partial", "World")
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render the template (note: variable 'partial' set in parent, but template also defines 'partial' from path)
 	expected := "Hello from "
@@ -203,7 +201,7 @@ func TestIncludeTagRenderToOutputBufferWithNestedPath(t *testing.T) {
 }
 
 func TestIncludeTagRenderToOutputBufferWithVariableFromContext(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 
 	// Create a file system with a template
@@ -222,8 +220,6 @@ func TestIncludeTagRenderToOutputBufferWithVariableFromContext(t *testing.T) {
 	// Set up context with file system
 	registers := liquid.NewRegisters(nil)
 	registers.Set("file_system", fs)
-	registers.Set("cached_partials", make(map[string]interface{}))
-	registers.Set("template_factory", liquid.NewTemplateFactory())
 	ctx := liquid.BuildContext(liquid.ContextConfig{Registers: registers})
 
 	// Create include tag without variableNameExpr - should find variable by template name
@@ -235,7 +231,7 @@ func TestIncludeTagRenderToOutputBufferWithVariableFromContext(t *testing.T) {
 	// Set variable with same name as template
 	ctx.Set("greeting", "World")
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render the template
 	expected := "Hello World"
@@ -245,7 +241,7 @@ func TestIncludeTagRenderToOutputBufferWithVariableFromContext(t *testing.T) {
 }
 
 func TestIncludeTagRenderToOutputBufferWithArrayVariable(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 
 	// Create a file system with a template
@@ -264,8 +260,6 @@ func TestIncludeTagRenderToOutputBufferWithArrayVariable(t *testing.T) {
 	// Set up context with file system
 	registers := liquid.NewRegisters(nil)
 	registers.Set("file_system", fs)
-	registers.Set("cached_partials", make(map[string]interface{}))
-	registers.Set("template_factory", liquid.NewTemplateFactory())
 	ctx := liquid.BuildContext(liquid.ContextConfig{Registers: registers})
 
 	// Create include tag with array variable (for clause)
@@ -277,7 +271,7 @@ func TestIncludeTagRenderToOutputBufferWithArrayVariable(t *testing.T) {
 	// Set array variable
 	ctx.Set("items", []interface{}{"one", "two", "three"})
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render template multiple times
 	expected := "Item: oneItem: twoItem: three"
@@ -287,7 +281,7 @@ func TestIncludeTagRenderToOutputBufferWithArrayVariable(t *testing.T) {
 }
 
 func TestIncludeTagRenderToOutputBufferWithAttributes(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 
 	// Create a file system with a template
@@ -306,8 +300,6 @@ func TestIncludeTagRenderToOutputBufferWithAttributes(t *testing.T) {
 	// Set up context with file system
 	registers := liquid.NewRegisters(nil)
 	registers.Set("file_system", fs)
-	registers.Set("cached_partials", make(map[string]interface{}))
-	registers.Set("template_factory", liquid.NewTemplateFactory())
 	ctx := liquid.BuildContext(liquid.ContextConfig{Registers: registers})
 
 	// Create include tag with attributes
@@ -317,7 +309,7 @@ func TestIncludeTagRenderToOutputBufferWithAttributes(t *testing.T) {
 	}
 
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render the template with attributes
 	expected := "Hello Alice"
@@ -327,7 +319,7 @@ func TestIncludeTagRenderToOutputBufferWithAttributes(t *testing.T) {
 }
 
 func TestIncludeTagRenderToOutputBufferWithAlias(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 
 	// Create a file system with a template
@@ -346,8 +338,6 @@ func TestIncludeTagRenderToOutputBufferWithAlias(t *testing.T) {
 	// Set up context with file system
 	registers := liquid.NewRegisters(nil)
 	registers.Set("file_system", fs)
-	registers.Set("cached_partials", make(map[string]interface{}))
-	registers.Set("template_factory", liquid.NewTemplateFactory())
 	ctx := liquid.BuildContext(liquid.ContextConfig{Registers: registers})
 
 	// Create include tag with alias
@@ -358,7 +348,7 @@ func TestIncludeTagRenderToOutputBufferWithAlias(t *testing.T) {
 
 	ctx.Set("user", "Bob")
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render the template with alias
 	expected := "Hello Bob"
@@ -368,7 +358,7 @@ func TestIncludeTagRenderToOutputBufferWithAlias(t *testing.T) {
 }
 
 func TestIncludeTagRenderToOutputBufferWithLocaleError(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	locale := liquid.NewI18n("en")
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env, Locale: locale})
 
@@ -380,7 +370,7 @@ func TestIncludeTagRenderToOutputBufferWithLocaleError(t *testing.T) {
 
 	ctx := liquid.NewContext()
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should output error message (Liquid error format)
 	if !strings.Contains(output, "Liquid") && output == "" {
@@ -389,7 +379,7 @@ func TestIncludeTagRenderToOutputBufferWithLocaleError(t *testing.T) {
 }
 
 func TestIncludeTagRenderToOutputBufferWithPartialName(t *testing.T) {
-	env := liquid.NewEnvironment()
+	env := mustEnv(liquid.EnvironmentConfig{})
 	pc := liquid.NewParseContext(liquid.ParseContextOptions{Environment: env})
 
 	// Create a file system with a template
@@ -408,8 +398,6 @@ func TestIncludeTagRenderToOutputBufferWithPartialName(t *testing.T) {
 	// Set up context with file system
 	registers := liquid.NewRegisters(nil)
 	registers.Set("file_system", fs)
-	registers.Set("cached_partials", make(map[string]interface{}))
-	registers.Set("template_factory", liquid.NewTemplateFactory())
 	ctx := liquid.BuildContext(liquid.ContextConfig{Registers: registers})
 
 	// Load the template normally first to cache it
@@ -419,11 +407,9 @@ func TestIncludeTagRenderToOutputBufferWithPartialName(t *testing.T) {
 	}
 
 	// Get the cached template and set its name
-	cache := registers.Get("cached_partials").(map[string]interface{})
-	if cached, ok := cache["greeting:lax"]; ok {
-		if template, ok := cached.(*liquid.Template); ok {
-			template.SetName("custom_name")
-		}
+	cache := registers.Get("cached_partials").(map[string]*liquid.Template)
+	if template, ok := cache["greeting:lax"]; ok {
+		template.SetName("custom_name")
 	}
 
 	// Create include tag
@@ -433,7 +419,7 @@ func TestIncludeTagRenderToOutputBufferWithPartialName(t *testing.T) {
 	}
 
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should use template name
 	expected := "Hello"

@@ -13,7 +13,7 @@ type mockParseContext struct {
 	warnings       []error
 }
 
-func (m *mockParseContext) ErrorMode() string {
+func (m *mockParseContext) ErrorMode() ErrorMode {
 	if m.env != nil {
 		return m.env.ErrorMode()
 	}
@@ -50,7 +50,7 @@ func (m *mockParseContext) SetLineNumber(ln *int) {
 
 func (m *mockParseContext) Environment() *Environment {
 	if m.env == nil {
-		m.env = NewEnvironment()
+		m.env = newEnvironment()
 	}
 	return m.env
 }
@@ -147,7 +147,7 @@ func TestVariableRender(t *testing.T) {
 	ctx.Set("name", "bob")
 
 	output := ""
-	v.RenderToOutputBuffer(ctx, &output)
+	renderToString(v, ctx, &output)
 	if output != "bob" {
 		t.Errorf("Expected 'bob', got %q", output)
 	}
@@ -171,11 +171,11 @@ type testPanicker struct {
 
 func (p *testPanicker) ToLiquid() interface{} { return p }
 
-func (p *testPanicker) LiquidMethodMissing(method string) interface{} {
-	if method == "trigger" {
-		panic(p.err)
+func (p *testPanicker) LiquidGet(_ *Context, key string) (interface{}, bool, error) {
+	if key == "trigger" {
+		return nil, false, p.err
 	}
-	return nil
+	return nil, false, nil
 }
 
 // TestRenderToOutputBufferPreservesLiquidErrorTypes tests that all LiquidError types
@@ -189,7 +189,6 @@ func TestRenderToOutputBufferPreservesLiquidErrorTypes(t *testing.T) {
 		{"UndefinedVariable", func() error { return NewUndefinedVariable("test") }},
 		{"UndefinedDropMethod", func() error { return NewUndefinedDropMethod("test") }},
 		{"DisabledError", func() error { return NewDisabledError("test") }},
-		{"MemoryError", func() error { return NewMemoryError("test") }},
 		{"FileSystemError", func() error { return NewFileSystemError("test") }},
 		{"ZeroDivisionError", func() error { return NewZeroDivisionError("test") }},
 		{"FloatDomainError", func() error { return NewFloatDomainError("test") }},
@@ -208,7 +207,7 @@ func TestRenderToOutputBufferPreservesLiquidErrorTypes(t *testing.T) {
 			v := NewVariable("panicker.trigger", pc)
 
 			output := ""
-			v.RenderToOutputBuffer(ctx, &output)
+			renderToString(v, ctx, &output)
 
 			// Error should be in context
 			if len(ctx.Errors()) == 0 {
@@ -221,4 +220,20 @@ func TestRenderToOutputBufferPreservesLiquidErrorTypes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRenderToOutputBufferRaisesMemoryError tests that a resource limit in a
+// variable ends the render, as in Ruby, rather than being written in place.
+func TestRenderToOutputBufferRaisesMemoryError(t *testing.T) {
+	ctx := NewContext()
+	ctx.Set("panicker", &testPanicker{err: NewMemoryError("Memory limits exceeded")})
+	lineNum := 1
+	v := NewVariable("panicker.trigger", &mockParseContext{lineNum: &lineNum})
+	defer func() {
+		if _, ok := recover().(*MemoryError); !ok {
+			t.Error("expected the MemoryError to go on up")
+		}
+	}()
+	output := ""
+	renderToString(v, ctx, &output)
 }

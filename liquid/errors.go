@@ -335,10 +335,26 @@ func (e *DisabledError) Error() string {
 
 func (e *DisabledError) GetError() *Error { return e.Err }
 
-// InternalError represents an internal error.
+// InternalError represents an internal error: a Go error a drop or a filter
+// returned, which is its cause, written as "internal" as Ruby writes an
+// error that is not a Liquid error.
 type InternalError struct {
-	Err *Error
+	Err   *Error
+	cause error
 }
+
+// asLiquidError returns err if it is a Liquid error, or an InternalError
+// caused by it.
+func asLiquidError(err error) error {
+	switch err.(type) {
+	case LiquidError, *Error:
+		return err
+	}
+	return &InternalError{Err: &Error{Message: "internal"}, cause: err}
+}
+
+// Unwrap returns the Go error the internal error stands for, if any.
+func (e *InternalError) Unwrap() error { return e.cause }
 
 // NewInternalError creates a new InternalError with the given message.
 func NewInternalError(message string) *InternalError {
@@ -370,3 +386,36 @@ func (e *TemplateEncodingError) Error() string {
 }
 
 func (e *TemplateEncodingError) GetError() *Error { return e.Err }
+
+// CanceledError ends a render whose context.Context is done. It wraps the
+// error of that context, errors.Is(err, context.DeadlineExceeded), and its
+// cause when one was given, as context.WithCancelCause does.
+type CanceledError struct {
+	Err   *Error
+	cause error
+}
+
+// NewCanceledError creates a CanceledError for the error of a context.
+func NewCanceledError(cause error) *CanceledError {
+	message := "render stopped"
+	if cause != nil {
+		message += ": " + cause.Error()
+	}
+	return &CanceledError{Err: &Error{Message: message}, cause: cause}
+}
+
+func (e *CanceledError) Error() string { return e.Err.Error() }
+
+// GetError returns the underlying Error.
+func (e *CanceledError) GetError() *Error { return e.Err }
+
+// Unwrap returns the error of the context.
+func (e *CanceledError) Unwrap() error { return e.cause }
+
+// Raise stops the render of the tag with err, as Ruby raises: the block body
+// that renders the tag records err and writes its message in place of the
+// tag, or nothing for a blank tag outside strict2 (see Template.Render). An
+// error that is not a Liquid error is written as "internal".
+func Raise(err error) {
+	panic(asLiquidError(err))
+}

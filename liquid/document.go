@@ -112,25 +112,9 @@ func (d *Document) UnknownTag(tag, markup string, tokenizer *Tokenizer) error {
 	}
 }
 
-// RenderToOutputBuffer renders the document to an output buffer.
-func (d *Document) RenderToOutputBuffer(context TagContext, output *string) {
-	// Check if profiling is enabled
-	if ctx, ok := context.(*Context); ok && ctx.Profiler() != nil {
-		templateName := ctx.TemplateName()
-		ctx.Profiler().Profile(templateName, func() {
-			d.body.RenderToOutputBuffer(context, output)
-		})
-		return
-	}
-
-	d.body.RenderToOutputBuffer(context, output)
-}
-
-// Render renders the document and returns the result as a string.
-func (d *Document) Render(context TagContext) string {
-	var output string
-	d.RenderToOutputBuffer(context, &output)
-	return output
+// RenderToOutput renders the document to output.
+func (d *Document) RenderToOutput(context TagContext, output *OutputBuffer) {
+	d.body.RenderToOutput(context, output)
 }
 
 func (d *Document) parseBody(tokenizer *Tokenizer, parseContext ParseContextInterface) bool {
@@ -138,7 +122,7 @@ func (d *Document) parseBody(tokenizer *Tokenizer, parseContext ParseContextInte
 		if unknownTagName != "" {
 			err := d.UnknownTag(unknownTagName, unknownTagMarkup, tokenizer)
 			if err != nil {
-				if d.parseContext.ErrorMode() == "warn" {
+				if d.parseContext.ErrorMode() == ErrorModeWarn {
 					d.parseContext.AddWarning(err)
 					return true
 				}

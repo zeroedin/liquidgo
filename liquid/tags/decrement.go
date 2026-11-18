@@ -3,7 +3,7 @@ package tags
 import (
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 // DecrementTag represents a decrement tag that creates a counter variable.
@@ -13,11 +13,14 @@ type DecrementTag struct {
 }
 
 // NewDecrementTag creates a new DecrementTag.
-func NewDecrementTag(tagName, markup string, parseContext liquid.ParseContextInterface) *DecrementTag {
+func NewDecrementTag(tagName, markup string, parseContext liquid.ParseContextInterface) (*DecrementTag, error) {
+	if err := checkVariableName(markup, markup, parseContext); err != nil {
+		return nil, err
+	}
 	return &DecrementTag{
 		Tag:          liquid.NewTag(tagName, markup, parseContext),
 		variableName: strings.TrimSpace(markup),
-	}
+	}, nil
 }
 
 // VariableName returns the variable name.
@@ -25,34 +28,10 @@ func (d *DecrementTag) VariableName() string {
 	return d.variableName
 }
 
-// RenderToOutputBuffer renders the decrement tag.
-func (d *DecrementTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
-	// Get counter environment (first environment)
+// RenderToOutput renders the decrement tag.
+func (d *DecrementTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	ctx := context.Context().(*liquid.Context)
-	environments := ctx.Scopes()
-	if len(environments) == 0 {
-		environments = []map[string]interface{}{make(map[string]interface{})}
-	}
-
-	counterEnv := environments[0]
-	value, ok := counterEnv[d.variableName]
-	if !ok {
-		value = 0
-	}
-
-	// Convert to int
-	var intValue int
-	switch v := value.(type) {
-	case int:
-		intValue = v
-	case float64:
-		intValue = int(v)
-	default:
-		intValue = 0
-	}
-
-	// Decrement first, then output
-	intValue--
-	counterEnv[d.variableName] = intValue
-	*output += liquid.ToS(intValue, nil)
+	value := ctx.Counter(d.variableName) - 1
+	ctx.SetCounter(d.variableName, value)
+	output.WriteString(liquid.ToS(value, nil))
 }

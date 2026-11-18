@@ -3,7 +3,7 @@ package tags
 import (
 	"regexp"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var inlineCommentNewlinePattern = regexp.MustCompile(`\n\s*[^#\s]`)
@@ -18,13 +18,7 @@ func NewInlineCommentTag(tagName, markup string, parseContext liquid.ParseContex
 	// Check if markup has newlines without # on subsequent lines
 	if inlineCommentNewlinePattern.MatchString(markup) {
 		// Get locale from parse context if it's a ParseContext struct
-		var locale *liquid.I18n
-		if pc, ok := parseContext.(*liquid.ParseContext); ok {
-			locale = pc.Locale()
-			msg := locale.Translate("errors.syntax.inline_comment_invalid", map[string]interface{}{})
-			return nil, liquid.NewSyntaxError(msg)
-		}
-		return nil, liquid.NewSyntaxError("Liquid syntax error: inline comment invalid")
+		return nil, liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.inline_comment_invalid", nil)
 	}
 
 	return &InlineCommentTag{
@@ -32,8 +26,8 @@ func NewInlineCommentTag(tagName, markup string, parseContext liquid.ParseContex
 	}, nil
 }
 
-// RenderToOutputBuffer renders nothing for inline comments.
-func (i *InlineCommentTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders nothing for inline comments.
+func (i *InlineCommentTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	// Do nothing - comments don't render
 	_ = context // no-op to register coverage
 }

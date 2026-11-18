@@ -3,8 +3,8 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // Custom type alias (like domain.MapOfAny in the bug report)
@@ -40,16 +40,15 @@ func TestCustomMapTypeAlias(t *testing.T) {
 
 	template := "{{ workspace.id }}"
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	tmpl, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("Failed to parse template: %v", err)
 	}
 
-	result1 := tmpl.Render(data1, nil)
-	result2 := tmpl.Render(data2, nil)
-	result3 := tmpl.Render(data3, nil)
+	result1 := renderRuby(tmpl, data1, nil)
+	result2 := renderRuby(tmpl, data2, nil)
+	result3 := renderRuby(tmpl, data3, nil)
 
 	// All three should produce the expected results
 	if result1 != "test-123" {
@@ -103,8 +102,7 @@ func TestCustomMapTypeAliasWithFilters(t *testing.T) {
 		},
 	}
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -113,7 +111,7 @@ func TestCustomMapTypeAliasWithFilters(t *testing.T) {
 				t.Fatalf("Failed to parse template: %v", err)
 			}
 
-			result := tmpl.Render(data, nil)
+			result := renderRuby(tmpl, data, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
@@ -137,14 +135,13 @@ func TestNestedCustomMapTypes(t *testing.T) {
 
 	template := "{{ company.workspace.project.task.id }}"
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	tmpl, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("Failed to parse template: %v", err)
 	}
 
-	result := tmpl.Render(data, nil)
+	result := renderRuby(tmpl, data, nil)
 	expected := "deep-nested-id"
 
 	if result != expected {
@@ -164,14 +161,13 @@ func TestCustomMapInLoops(t *testing.T) {
 
 	template := "{% for item in items %}{{ item.name }}: {{ item.value }}\n{% endfor %}"
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	tmpl, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("Failed to parse template: %v", err)
 	}
 
-	result := tmpl.Render(data, nil)
+	result := renderRuby(tmpl, data, nil)
 	expected := "Item 1: 10\nItem 2: 20\nItem 3: 30\n"
 
 	if result != expected {
@@ -205,8 +201,7 @@ func TestCustomMapInConditionals(t *testing.T) {
 		},
 	}
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -215,7 +210,7 @@ func TestCustomMapInConditionals(t *testing.T) {
 				t.Fatalf("Failed to parse template: %v", err)
 			}
 
-			result := tmpl.Render(data, nil)
+			result := renderRuby(tmpl, data, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
@@ -267,8 +262,7 @@ func TestMixedCustomAndNativeMaps(t *testing.T) {
 		},
 	}
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -277,7 +271,7 @@ func TestMixedCustomAndNativeMaps(t *testing.T) {
 				t.Fatalf("Failed to parse template: %v", err)
 			}
 
-			result := tmpl.Render(data, nil)
+			result := renderRuby(tmpl, data, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
@@ -341,8 +335,7 @@ func TestCustomMapWithDifferentTypes(t *testing.T) {
 		},
 	}
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -351,7 +344,7 @@ func TestCustomMapWithDifferentTypes(t *testing.T) {
 				t.Fatalf("Failed to parse template: %v", err)
 			}
 
-			result := tmpl.Render(data, nil)
+			result := renderRuby(tmpl, data, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
@@ -370,14 +363,13 @@ func TestCustomMapTypeAssignTag(t *testing.T) {
 
 	template := "{% assign ws_id = workspace.id %}{% assign ws_name = workspace.name %}ID: {{ ws_id }}, Name: {{ ws_name }}"
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	tmpl, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("Failed to parse template: %v", err)
 	}
 
-	result := tmpl.Render(data, nil)
+	result := renderRuby(tmpl, data, nil)
 	expected := "ID: ws-123, Name: My Workspace"
 
 	if result != expected {

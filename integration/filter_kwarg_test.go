@@ -3,8 +3,9 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/internal/methodfilters"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // KwargFilter provides a test filter that accepts keyword arguments.
@@ -27,9 +28,7 @@ func (k *KwargFilter) HtmlTag(_ interface{}, attributes interface{}) interface{}
 func TestFilterKwarg_CanParseDataKwargs(t *testing.T) {
 	t.Skip("Keyword arguments not yet implemented in liquidgo")
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&KwargFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&KwargFilter{})})
 
 	template := `{{ 'img' | html_tag: data-src: 'src', data-widths: '100, 200' }}`
 	expected := "data-src='src' data-widths='100, 200'"
@@ -41,13 +40,13 @@ func TestFilterKwarg_CanParseDataKwargs(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{},
 		RethrowErrors:      false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}

@@ -1,9 +1,10 @@
 package tags
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 func TestCaseTag(t *testing.T) {
@@ -38,7 +39,7 @@ func TestCaseTagWithWhen(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("var", 1)
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	if output != "one" {
 		t.Errorf("Expected output 'one', got %q", output)
@@ -66,7 +67,7 @@ func TestCaseTagWithWhenAndElse(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("var", 2)
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render else block
 	if output != "other" {
@@ -95,7 +96,7 @@ func TestCaseTagWithMultipleWhen(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("var", 2)
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	if output != "two" {
 		t.Errorf("Expected output 'two', got %q", output)
@@ -238,8 +239,8 @@ func TestCaseTagParseBodyForBlockTagNeverClosed(t *testing.T) {
 			if !ok {
 				t.Fatalf("Expected SyntaxError panic, got %T: %v", r, r)
 			}
-			if syntaxErr.Error() != "Liquid syntax error: Tag was never closed: case" {
-				t.Errorf("Expected 'Tag was never closed: case', got: %v", syntaxErr.Error())
+			if syntaxErr.Error() != "Liquid syntax error: 'case' tag was never closed" {
+				t.Errorf("Expected Ruby's 'case' tag was never closed, got: %v", syntaxErr.Error())
 			}
 		} else {
 			t.Fatal("Expected panic for unclosed tag, but no panic occurred")
@@ -272,13 +273,10 @@ func TestCaseTagRecordWhenCondition(t *testing.T) {
 		t.Fatalf("recordWhenCondition() with multiple values error = %v", err)
 	}
 
-	// Test with invalid syntax - empty string doesn't enter loop, so returns nil
-	// The function only errors if it enters the loop and doesn't match
-	// Empty string is valid (no conditions)
+	// A when without a condition is a syntax error, as in Ruby
 	tag3, _ := NewCaseTag("case", "var", pc)
-	err = tag3.recordWhenCondition("")
-	if err != nil {
-		t.Errorf("Empty when condition should not error, got %v", err)
+	if err = tag3.recordWhenCondition(""); err == nil {
+		t.Error("an empty when condition must be a syntax error")
 	}
 }
 
@@ -324,7 +322,7 @@ func TestCaseTagRenderToOutputBuffer(t *testing.T) {
 
 	// Test with matching when condition
 	ctx.Set("var", 1)
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	if output != "one" {
 		t.Errorf("Expected 'one', got %q", output)
 	}
@@ -332,7 +330,7 @@ func TestCaseTagRenderToOutputBuffer(t *testing.T) {
 	// Test with else condition
 	output = ""
 	ctx.Set("var", 2)
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	if output != "other" {
 		t.Errorf("Expected 'other', got %q", output)
 	}
@@ -340,7 +338,7 @@ func TestCaseTagRenderToOutputBuffer(t *testing.T) {
 	// Test with error in evaluation
 	output = ""
 	ctx.Set("var", nil)
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	// Should handle error gracefully
 	_ = output
 }
@@ -398,12 +396,15 @@ func TestCaseTagParseBodyForBlockUnknownTag(t *testing.T) {
 	// Test with unknown tag that should be handled
 	tokenizer := pc.NewTokenizer("content {% unknown_tag %}more{% endcase %}", false, nil, false)
 
-	shouldContinue, err := tag.parseBodyForBlock(tokenizer, body)
-	if err != nil {
-		// Unknown tags might cause errors, which is acceptable
-		_ = err
-	}
-	_ = shouldContinue
+	// As Ruby's unknown_tag, an unknown tag is a syntax error
+	defer func() {
+		r := recover()
+		if err, ok := r.(*liquid.SyntaxError); !ok || !strings.Contains(err.Error(), "Unknown tag 'unknown_tag'") {
+			t.Errorf("an unknown tag raised %v, want Unknown tag 'unknown_tag'", r)
+		}
+	}()
+	_, _ = tag.parseBodyForBlock(tokenizer, body)
+	t.Error("an unknown tag did not raise")
 }
 
 func TestCaseTagRenderToOutputBufferWithError(t *testing.T) {
@@ -427,7 +428,7 @@ func TestCaseTagRenderToOutputBufferWithError(t *testing.T) {
 
 	var output string
 	// Should handle error gracefully
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	// Output might contain error message or be empty
 	_ = output
 }
@@ -450,7 +451,7 @@ func TestCaseTagRenderToOutputBufferNoMatchingWhen(t *testing.T) {
 	ctx.Set("var", 999) // Value that doesn't match any when
 
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 	// Should render nothing when no match and no else
 	if output != "" {
 		t.Errorf("Expected empty output for no match, got %q", output)
@@ -477,7 +478,7 @@ func TestCaseTagRenderToOutputBufferErrorHandling(t *testing.T) {
 	var output string
 
 	// Should handle evaluation errors gracefully
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// May produce error message or empty output
 	t.Logf("Note: Case tag error handling output: %q", output)
@@ -501,7 +502,7 @@ func TestCaseTagRenderToOutputBufferMultipleWhen(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("var", 2)
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render matching when block
 	if output != "two" {
@@ -527,7 +528,7 @@ func TestCaseTagRenderToOutputBufferElseBlock(t *testing.T) {
 	ctx := liquid.NewContext()
 	ctx.Set("var", 99) // Value that doesn't match when
 	var output string
-	tag.RenderToOutputBuffer(ctx, &output)
+	renderToString(tag, ctx, &output)
 
 	// Should render else block
 	if output != "other" {
@@ -537,8 +538,7 @@ func TestCaseTagRenderToOutputBufferElseBlock(t *testing.T) {
 
 // TestCaseTagWithComma tests case/when with comma-separated values (Ruby test: test_case_when_with_comma)
 func TestCaseTagWithComma(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 	template := `{%- case 1 -%}
 {%- when 2, 1 -%}
@@ -552,7 +552,7 @@ two
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	result := tmpl.RenderBang(nil, nil)
+	result := renderRubyBang(tmpl, nil, nil)
 	expected := "one"
 	if result != expected {
 		t.Errorf("Expected %q, got %q", expected, result)
@@ -561,8 +561,7 @@ two
 
 // TestCaseTagWithOr tests case/when with 'or' operator (Ruby test: test_case_when_with_or)
 func TestCaseTagWithOr(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 	template := `{%- case 1 -%}
 {%- when 2 or 1 -%}
@@ -576,7 +575,7 @@ two
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	result := tmpl.RenderBang(nil, nil)
+	result := renderRubyBang(tmpl, nil, nil)
 	expected := "one"
 	if result != expected {
 		t.Errorf("Expected %q, got %q", expected, result)
@@ -585,8 +584,7 @@ two
 
 // TestCaseTagNodelistIntegration tests nodelist structure (Ruby test: test_case_nodelist)
 func TestCaseTagNodelistIntegration(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 	template := `{% case var %}{% when true %}WHEN{% else %}ELSE{% endcase %}`
 	tmpl, err := liquid.ParseTemplate(template, &liquid.TemplateOptions{Environment: env})
@@ -595,13 +593,13 @@ func TestCaseTagNodelistIntegration(t *testing.T) {
 	}
 
 	// Test with true
-	result := tmpl.RenderBang(map[string]interface{}{"var": true}, nil)
+	result := renderRubyBang(tmpl, map[string]interface{}{"var": true}, nil)
 	if result != "WHEN" {
 		t.Errorf("Expected 'WHEN', got %q", result)
 	}
 
 	// Test with false
-	result = tmpl.RenderBang(map[string]interface{}{"var": false}, nil)
+	result = renderRubyBang(tmpl, map[string]interface{}{"var": false}, nil)
 	if result != "ELSE" {
 		t.Errorf("Expected 'ELSE', got %q", result)
 	}
@@ -609,8 +607,7 @@ func TestCaseTagNodelistIntegration(t *testing.T) {
 
 // TestCaseTagIntegrationMultipleConditions tests case tag with multiple conditions matching Ruby integration tests
 func TestCaseTagIntegrationMultipleConditions(t *testing.T) {
-	env := liquid.NewEnvironment()
-	RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: Standard()})
 
 	tests := []struct {
 		name     string
@@ -669,7 +666,7 @@ func TestCaseTagIntegrationMultipleConditions(t *testing.T) {
 				t.Fatalf("ParseTemplate() error = %v", err)
 			}
 
-			result := tmpl.RenderBang(tt.assigns, nil)
+			result := renderRubyBang(tmpl, tt.assigns, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}

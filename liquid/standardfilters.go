@@ -1,15 +1,10 @@
 package liquid
 
 import (
-	"encoding/base64"
-	"html"
-	"math"
-	"net/url"
 	"reflect"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // StandardFilters provides standard filter implementations.
@@ -25,11 +20,13 @@ func (sf *StandardFilters) Size(input interface{}) interface{} {
 	}
 	switch v := input.(type) {
 	case string:
-		return len(v)
+		return utf8.RuneCountInString(v)
 	case []interface{}:
 		return len(v)
 	case map[string]interface{}:
 		return len(v)
+	case *Range:
+		return v.Len()
 	default:
 		// Reflection fallback for typed slices/arrays/maps
 		// This matches Ruby's duck-typing behavior: objects respond to .size
@@ -44,243 +41,15 @@ func (sf *StandardFilters) Size(input interface{}) interface{} {
 	}
 }
 
-// Downcase converts a string to all lowercase characters.
-func (sf *StandardFilters) Downcase(input interface{}) string {
-	return strings.ToLower(ToS(input, nil))
-}
-
-// Upcase converts a string to all uppercase characters.
-func (sf *StandardFilters) Upcase(input interface{}) string {
-	return strings.ToUpper(ToS(input, nil))
-}
-
-// Capitalize capitalizes the first word in a string and downcases the remaining characters.
-func (sf *StandardFilters) Capitalize(input interface{}) string {
-	s := ToS(input, nil)
-	if len(s) == 0 {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
-}
-
-// Escape escapes special characters in HTML.
-func (sf *StandardFilters) Escape(input interface{}) string {
-	if input == nil {
-		return ""
-	}
-	return html.EscapeString(ToS(input, nil))
-}
-
-// H is an alias for Escape.
-func (sf *StandardFilters) H(input interface{}) string {
-	return sf.Escape(input)
-}
-
-// EscapeOnce escapes a string without changing characters that have already been escaped.
-func (sf *StandardFilters) EscapeOnce(input interface{}) string {
-	s := ToS(input, nil)
-	// Simple implementation - just escape
-	return html.EscapeString(s)
-}
-
-// URLEncode converts URL-unsafe characters to percent-encoded equivalent.
-func (sf *StandardFilters) URLEncode(input interface{}) string {
-	if input == nil {
-		return ""
-	}
-	return url.QueryEscape(ToS(input, nil))
-}
-
-// URLDecode decodes percent-encoded characters.
-func (sf *StandardFilters) URLDecode(input interface{}) (string, error) {
-	if input == nil {
-		return "", nil
-	}
-	decoded, err := url.QueryUnescape(ToS(input, nil))
-	if err != nil {
-		return "", NewArgumentError("invalid URL encoding")
-	}
-	return decoded, nil
-}
-
-// Base64Encode encodes a string to Base64 format.
-func (sf *StandardFilters) Base64Encode(input interface{}) string {
-	return base64.StdEncoding.EncodeToString([]byte(ToS(input, nil)))
-}
-
-// Base64Decode decodes a string in Base64 format.
-func (sf *StandardFilters) Base64Decode(input interface{}) (string, error) {
-	s := ToS(input, nil)
-	decoded, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return "", NewArgumentError("invalid base64 provided to base64_decode")
-	}
-	return string(decoded), nil
-}
-
-// Base64URLSafeEncode encodes a string to URL-safe Base64 format.
-func (sf *StandardFilters) Base64URLSafeEncode(input interface{}) string {
-	return base64.URLEncoding.EncodeToString([]byte(ToS(input, nil)))
-}
-
-// Base64URLSafeDecode decodes a string in URL-safe Base64 format.
-func (sf *StandardFilters) Base64URLSafeDecode(input interface{}) (string, error) {
-	s := ToS(input, nil)
-	decoded, err := base64.URLEncoding.DecodeString(s)
-	if err != nil {
-		return "", NewArgumentError("invalid base64 provided to base64_url_safe_decode")
-	}
-	return string(decoded), nil
-}
-
-// Slice returns a substring or series of array items.
-func (sf *StandardFilters) Slice(input interface{}, offset interface{}, length interface{}) interface{} {
-	offsetInt, _ := ToInteger(offset)
-	lengthInt := 1
-	if length != nil {
-		lengthInt, _ = ToInteger(length)
-	}
-
-	switch v := input.(type) {
-	case []interface{}:
-		if offsetInt < 0 || offsetInt >= len(v) {
-			return []interface{}{}
-		}
-		end := offsetInt + lengthInt
-		if end > len(v) {
-			end = len(v)
-		}
-		return v[offsetInt:end]
-	case string:
-		if offsetInt < 0 || offsetInt >= len(v) {
-			return ""
-		}
-		end := offsetInt + lengthInt
-		if end > len(v) {
-			end = len(v)
-		}
-		return v[offsetInt:end]
-	default:
-		// Use reflection to handle typed slices/arrays
-		if input != nil {
-			val := reflect.ValueOf(input)
-			if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
-				if offsetInt < 0 || offsetInt >= val.Len() {
-					return []interface{}{}
-				}
-				end := offsetInt + lengthInt
-				if end > val.Len() {
-					end = val.Len()
-				}
-				// Convert slice to []interface{}
-				result := make([]interface{}, end-offsetInt)
-				for i := offsetInt; i < end; i++ {
-					result[i-offsetInt] = val.Index(i).Interface()
-				}
-				return result
-			}
-		}
-		return ""
-	}
-}
-
-// Truncate truncates a string down to a given number of characters.
-func (sf *StandardFilters) Truncate(input interface{}, length interface{}, truncateString interface{}) string {
-	if input == nil {
-		return ""
-	}
-	inputStr := ToS(input, nil)
-	lengthInt, _ := ToInteger(length)
-	if lengthInt <= 0 {
-		lengthInt = 50
-	}
-
-	truncateStr := "..."
-	if truncateString != nil {
-		truncateStr = ToS(truncateString, nil)
-	}
-
-	if len(inputStr) <= lengthInt {
-		return inputStr
-	}
-
-	l := lengthInt - len(truncateStr)
-	if l < 0 {
-		l = 0
-	}
-
-	return inputStr[:l] + truncateStr
-}
-
-// TruncateWords truncates a string down to a given number of words.
-func (sf *StandardFilters) TruncateWords(input interface{}, words interface{}, truncateString interface{}) string {
-	if input == nil {
-		return ""
-	}
-	inputStr := ToS(input, nil)
-	wordsInt, _ := ToInteger(words)
-	if wordsInt <= 0 {
-		wordsInt = 15
-	}
-
-	truncateStr := "..."
-	if truncateString != nil {
-		truncateStr = ToS(truncateString, nil)
-	}
-
-	wordList := strings.Fields(inputStr)
-	if len(wordList) <= wordsInt {
-		return inputStr
-	}
-
-	result := strings.Join(wordList[:wordsInt], " ")
-	return result + truncateStr
-}
-
-// Split splits a string into an array of substrings based on a separator.
-func (sf *StandardFilters) Split(input interface{}, pattern interface{}) []interface{} {
-	inputStr := ToS(input, nil)
-	patternStr := ToS(pattern, nil)
-	parts := strings.Split(inputStr, patternStr)
-	result := make([]interface{}, len(parts))
-	for i, part := range parts {
-		result[i] = part
-	}
-	return result
-}
-
-// Strip strips whitespace from both ends of a string.
-func (sf *StandardFilters) Strip(input interface{}) string {
-	return strings.TrimSpace(ToS(input, nil))
-}
-
-// Lstrip strips whitespace from the left end of a string.
-func (sf *StandardFilters) Lstrip(input interface{}) string {
-	return strings.TrimLeft(ToS(input, nil), " \t\n\r")
-}
-
-// Rstrip strips whitespace from the right end of a string.
-func (sf *StandardFilters) Rstrip(input interface{}) string {
-	return strings.TrimRight(ToS(input, nil), " \t\n\r")
-}
-
-// StripHTML strips HTML tags from a string.
-func (sf *StandardFilters) StripHTML(input interface{}) string {
-	s := ToS(input, nil)
-
-	// First remove script/style/comment blocks
-	stripHTMLBlocks := regexp.MustCompile(`(?s)<script.*?</script>|<!--.*?-->|<style.*?</style>`)
-	result := stripHTMLBlocks.ReplaceAllString(s, "")
-
-	// Then remove all HTML tags
-	stripHTMLTags := regexp.MustCompile(`<.*?>`)
-	result = stripHTMLTags.ReplaceAllString(result, "")
-
-	return result
-}
-
-// First returns the first element of an array.
+// First returns the first element of an array, or the start of a range, as
+// Range#first, even when the range is empty.
 func (sf *StandardFilters) First(input interface{}) interface{} {
+	if s, ok := input.(string); ok {
+		return firstChar(s)
+	}
+	if r, ok := input.(*Range); ok {
+		return r.Start
+	}
 	if arr, ok := input.([]interface{}); ok && len(arr) > 0 {
 		return arr[0]
 	}
@@ -289,14 +58,21 @@ func (sf *StandardFilters) First(input interface{}) interface{} {
 	if input != nil {
 		v := reflect.ValueOf(input)
 		if (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) && v.Len() > 0 {
-			return v.Index(0).Interface()
+			return itemAt(v, 0)
 		}
 	}
 	return nil
 }
 
-// Last returns the last element of an array.
+// Last returns the last element of an array, or the end of a range, as
+// Range#last, even when the range is empty.
 func (sf *StandardFilters) Last(input interface{}) interface{} {
+	if s, ok := input.(string); ok {
+		return lastChar(s)
+	}
+	if r, ok := input.(*Range); ok {
+		return r.End
+	}
 	if arr, ok := input.([]interface{}); ok && len(arr) > 0 {
 		return arr[len(arr)-1]
 	}
@@ -305,39 +81,10 @@ func (sf *StandardFilters) Last(input interface{}) interface{} {
 	if input != nil {
 		v := reflect.ValueOf(input)
 		if (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) && v.Len() > 0 {
-			return v.Index(v.Len() - 1).Interface()
+			return itemAt(v, v.Len()-1)
 		}
 	}
 	return nil
-}
-
-// Join joins array elements with a separator.
-func (sf *StandardFilters) Join(input interface{}, separator interface{}) string {
-	sep := ", "
-	if separator != nil {
-		sep = ToS(separator, nil)
-	}
-
-	if arr, ok := input.([]interface{}); ok {
-		parts := make([]string, len(arr))
-		for i, item := range arr {
-			parts[i] = ToS(item, nil)
-		}
-		return strings.Join(parts, sep)
-	}
-	// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
-	// This matches Ruby's duck-typing behavior: arrays respond to .join
-	if input != nil {
-		v := reflect.ValueOf(input)
-		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-			parts := make([]string, v.Len())
-			for i := 0; i < v.Len(); i++ {
-				parts[i] = ToS(v.Index(i).Interface(), nil)
-			}
-			return strings.Join(parts, sep)
-		}
-	}
-	return ToS(input, nil)
 }
 
 // Date formats a date using strftime-style format codes.
@@ -353,285 +100,6 @@ func (sf *StandardFilters) Date(input interface{}, format interface{}) interface
 	}
 
 	return strftime(date, formatStr)
-}
-
-// StripNewlines strips all newline characters from a string.
-// Mirrors Ruby's strip_newlines from standardfilters.rb:354
-func (sf *StandardFilters) StripNewlines(input interface{}) string {
-	s := ToS(input, nil)
-	s = strings.ReplaceAll(s, "\r\n", "")
-	s = strings.ReplaceAll(s, "\n", "")
-	return s
-}
-
-// NewlineToBr converts newlines to HTML line breaks.
-// Mirrors Ruby's newline_to_br from standardfilters.rb:709
-func (sf *StandardFilters) NewlineToBr(input interface{}) string {
-	s := ToS(input, nil)
-	// Replace \r\n first to avoid double replacement
-	re := regexp.MustCompile(`\r?\n`)
-	return re.ReplaceAllString(s, "<br />\n")
-}
-
-// Replace replaces all occurrences of a substring.
-// Mirrors Ruby's replace from standardfilters.rb:583
-func (sf *StandardFilters) Replace(input interface{}, str interface{}, replacement interface{}) string {
-	inputStr := ToS(input, nil)
-	searchStr := ToS(str, nil)
-	replaceStr := ""
-	if replacement != nil {
-		replaceStr = ToS(replacement, nil)
-	}
-	return strings.ReplaceAll(inputStr, searchStr, replaceStr)
-}
-
-// ReplaceFirst replaces the first occurrence of a substring.
-// Mirrors Ruby's replace_first from standardfilters.rb:597
-func (sf *StandardFilters) ReplaceFirst(input interface{}, str interface{}, replacement interface{}) string {
-	inputStr := ToS(input, nil)
-	searchStr := ToS(str, nil)
-	replaceStr := ""
-	if replacement != nil {
-		replaceStr = ToS(replacement, nil)
-	}
-	return strings.Replace(inputStr, searchStr, replaceStr, 1)
-}
-
-// ReplaceLast replaces the last occurrence of a substring.
-// Mirrors Ruby's replace_last from standardfilters.rb:611
-func (sf *StandardFilters) ReplaceLast(input interface{}, str interface{}, replacement interface{}) string {
-	inputStr := ToS(input, nil)
-	searchStr := ToS(str, nil)
-	replaceStr := ToS(replacement, nil)
-
-	startIndex := strings.LastIndex(inputStr, searchStr)
-	if startIndex == -1 {
-		return inputStr
-	}
-
-	return inputStr[:startIndex] + replaceStr + inputStr[startIndex+len(searchStr):]
-}
-
-// Remove removes all occurrences of a substring.
-// Mirrors Ruby's remove from standardfilters.rb:632
-func (sf *StandardFilters) Remove(input interface{}, str interface{}) string {
-	return sf.Replace(input, str, "")
-}
-
-// RemoveFirst removes the first occurrence of a substring.
-// Mirrors Ruby's remove_first from standardfilters.rb:643
-func (sf *StandardFilters) RemoveFirst(input interface{}, str interface{}) string {
-	return sf.ReplaceFirst(input, str, "")
-}
-
-// RemoveLast removes the last occurrence of a substring.
-// Mirrors Ruby's remove_last from standardfilters.rb:654
-func (sf *StandardFilters) RemoveLast(input interface{}, str interface{}) string {
-	return sf.ReplaceLast(input, str, "")
-}
-
-// Append adds a string to the end.
-// Mirrors Ruby's append from standardfilters.rb:665
-func (sf *StandardFilters) Append(input interface{}, str interface{}) string {
-	inputStr := ToS(input, nil)
-	appendStr := ToS(str, nil)
-	return inputStr + appendStr
-}
-
-// Prepend adds a string to the beginning.
-// Mirrors Ruby's prepend from standardfilters.rb:696
-func (sf *StandardFilters) Prepend(input interface{}, str interface{}) string {
-	inputStr := ToS(input, nil)
-	prependStr := ToS(str, nil)
-	return prependStr + inputStr
-}
-
-// Abs returns the absolute value of a number.
-// Mirrors Ruby's abs from standardfilters.rb:792
-func (sf *StandardFilters) Abs(input interface{}) interface{} {
-	num, _ := ToNumber(input)
-	switch v := num.(type) {
-	case int:
-		if v < 0 {
-			return -v
-		}
-		return v
-	case float64:
-		return math.Abs(v)
-	default:
-		return 0
-	}
-}
-
-// Plus adds two numbers.
-// Mirrors Ruby's plus from standardfilters.rb:804
-func (sf *StandardFilters) Plus(input interface{}, operand interface{}) interface{} {
-	return applyOperation(input, operand, "+")
-}
-
-// Minus subtracts two numbers.
-// Mirrors Ruby's minus from standardfilters.rb:815
-func (sf *StandardFilters) Minus(input interface{}, operand interface{}) interface{} {
-	return applyOperation(input, operand, "-")
-}
-
-// Times multiplies two numbers.
-// Mirrors Ruby's times from standardfilters.rb:826
-func (sf *StandardFilters) Times(input interface{}, operand interface{}) interface{} {
-	return applyOperation(input, operand, "*")
-}
-
-// DividedBy divides two numbers.
-// Mirrors Ruby's divided_by from standardfilters.rb:837
-func (sf *StandardFilters) DividedBy(input interface{}, operand interface{}) (interface{}, error) {
-	operandNum, _ := ToNumber(operand)
-	var operandFloat float64
-	switch v := operandNum.(type) {
-	case int:
-		if v == 0 {
-			return nil, NewZeroDivisionError("divided by 0")
-		}
-		operandFloat = float64(v)
-	case float64:
-		if v == 0 {
-			return nil, NewZeroDivisionError("divided by 0")
-		}
-		operandFloat = v
-	default:
-		return nil, NewZeroDivisionError("divided by 0")
-	}
-
-	if operandFloat == 0 {
-		return nil, NewZeroDivisionError("divided by 0")
-	}
-
-	return applyOperation(input, operand, "/"), nil
-}
-
-// Modulo returns the remainder of division.
-// Mirrors Ruby's modulo from standardfilters.rb:850
-func (sf *StandardFilters) Modulo(input interface{}, operand interface{}) (interface{}, error) {
-	operandNum, _ := ToNumber(operand)
-	var operandFloat float64
-	switch v := operandNum.(type) {
-	case int:
-		if v == 0 {
-			return nil, NewZeroDivisionError("divided by 0")
-		}
-		operandFloat = float64(v)
-	case float64:
-		if v == 0 {
-			return nil, NewZeroDivisionError("divided by 0")
-		}
-		operandFloat = v
-	default:
-		return nil, NewZeroDivisionError("divided by 0")
-	}
-
-	if operandFloat == 0 {
-		return nil, NewZeroDivisionError("divided by 0")
-	}
-
-	return applyOperation(input, operand, "%"), nil
-}
-
-// Round rounds a number to the nearest integer or specified precision.
-// Mirrors Ruby's round from standardfilters.rb:863
-func (sf *StandardFilters) Round(input interface{}, n interface{}) (interface{}, error) {
-	num, _ := ToNumber(input)
-	precision := 0
-	if n != nil {
-		precisionNum, _ := ToNumber(n)
-		if p, ok := precisionNum.(int); ok {
-			precision = p
-		} else if p, ok := precisionNum.(float64); ok {
-			precision = int(p)
-		}
-	}
-
-	var result interface{}
-	switch v := num.(type) {
-	case int:
-		result = v
-	case float64:
-		if math.IsInf(v, 0) || math.IsNaN(v) {
-			return nil, NewFloatDomainError("Infinity")
-		}
-		if precision == 0 {
-			result = int(math.Round(v))
-		} else {
-			multiplier := math.Pow(10, float64(precision))
-			result = math.Round(v*multiplier) / multiplier
-		}
-	default:
-		result = 0
-	}
-
-	return result, nil
-}
-
-// Ceil rounds a number up to the nearest integer.
-// Mirrors Ruby's ceil from standardfilters.rb:879
-func (sf *StandardFilters) Ceil(input interface{}) (int, error) {
-	num, _ := ToNumber(input)
-	switch v := num.(type) {
-	case int:
-		return v, nil
-	case float64:
-		if math.IsInf(v, 0) || math.IsNaN(v) {
-			return 0, NewFloatDomainError("Infinity")
-		}
-		return int(math.Ceil(v)), nil
-	default:
-		return 0, nil
-	}
-}
-
-// Floor rounds a number down to the nearest integer.
-// Mirrors Ruby's floor from standardfilters.rb:892
-func (sf *StandardFilters) Floor(input interface{}) (int, error) {
-	num, _ := ToNumber(input)
-	switch v := num.(type) {
-	case int:
-		return v, nil
-	case float64:
-		if math.IsInf(v, 0) || math.IsNaN(v) {
-			return 0, NewFloatDomainError("Infinity")
-		}
-		return int(math.Floor(v)), nil
-	default:
-		return 0, nil
-	}
-}
-
-// AtLeast limits a number to a minimum value.
-// Mirrors Ruby's at_least from standardfilters.rb:905
-func (sf *StandardFilters) AtLeast(input interface{}, n interface{}) interface{} {
-	minValue, _ := ToNumber(n)
-	result, _ := ToNumber(input)
-
-	minFloat, _ := ToNumberValue(minValue)
-	resultFloat, _ := ToNumberValue(result)
-
-	if minFloat > resultFloat {
-		return minValue
-	}
-	return result
-}
-
-// AtMost limits a number to a maximum value.
-// Mirrors Ruby's at_most from standardfilters.rb:920
-func (sf *StandardFilters) AtMost(input interface{}, n interface{}) interface{} {
-	maxValue, _ := ToNumber(n)
-	result, _ := ToNumber(input)
-
-	maxFloat, _ := ToNumberValue(maxValue)
-	resultFloat, _ := ToNumberValue(result)
-
-	if maxFloat < resultFloat {
-		return maxValue
-	}
-	return result
 }
 
 // Default returns a default value if input is nil, false, or empty.
@@ -688,11 +156,9 @@ func (sf *StandardFilters) Default(input interface{}, defaultValue interface{}, 
 	return input
 }
 
-// InputIterator wraps input for iteration with context support.
-// Mirrors Ruby's InputIterator class from standardfilters.rb:1032-1094
+// InputIterator wraps input for iteration, as Ruby's InputIterator.
 type InputIterator struct {
-	input   []interface{}
-	context *Context
+	input []interface{}
 }
 
 // NewInputIterator creates a new InputIterator.
@@ -706,6 +172,14 @@ func NewInputIterator(input interface{}, context *Context) *InputIterator {
 		items = flattenArray(arr)
 	} else if m, ok := input.(map[string]interface{}); ok {
 		items = []interface{}{m}
+	} else if r, ok := input.(*Range); ok {
+		// A range is enumerable: its integers, within the limits
+		n := r.Len()
+		(&StandardFilters{context: context}).checkRangeItems(n)
+		items = make([]interface{}, n)
+		for i := range items {
+			items[i] = r.Start + i
+		}
 	} else if input != nil {
 		// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
 		// This matches Ruby's duck-typing behavior: arrays respond to iteration
@@ -713,7 +187,7 @@ func NewInputIterator(input interface{}, context *Context) *InputIterator {
 		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
 			items = make([]interface{}, v.Len())
 			for i := 0; i < v.Len(); i++ {
-				items[i] = v.Index(i).Interface()
+				items[i] = itemAt(v, i)
 			}
 		} else {
 			// Single item
@@ -725,17 +199,39 @@ func NewInputIterator(input interface{}, context *Context) *InputIterator {
 	}
 
 	return &InputIterator{
-		input:   items,
-		context: context,
+		input: items,
 	}
 }
 
-// flattenArray recursively flattens nested arrays.
+// flattenArray recursively flattens nested arrays. An array that holds
+// itself is left out where it recurs, instead of recursing without end.
 func flattenArray(arr []interface{}) []interface{} {
 	result := make([]interface{}, 0, len(arr))
+	if hasNestedList(arr) {
+		return appendFlattened(result, arr, map[flattenKey]bool{})
+	}
+	// no nested list: a copy, without the map that stops a list holding itself
+	return append(result, arr...)
+}
+
+// flattenKey names an array being flattened by its first item and length.
+type flattenKey struct {
+	first *interface{}
+	n     int
+}
+
+func appendFlattened(result, arr []interface{}, seen map[flattenKey]bool) []interface{} {
+	if len(arr) > 0 {
+		key := flattenKey{&arr[0], len(arr)}
+		if seen[key] {
+			return result
+		}
+		seen[key] = true
+		defer delete(seen, key)
+	}
 	for _, item := range arr {
 		if nested, ok := item.([]interface{}); ok {
-			result = append(result, flattenArray(nested)...)
+			result = appendFlattened(result, nested, seen)
 		} else {
 			result = append(result, item)
 		}
@@ -746,15 +242,8 @@ func flattenArray(arr []interface{}) []interface{} {
 // Each iterates over items, converting them to liquid values.
 func (it *InputIterator) Each(fn func(interface{})) {
 	for _, item := range it.input {
-		// Convert to liquid if needed
-		liquidItem := ToLiquidValue(item)
-
-		// Set context if supported
-		if it.context != nil {
-			if drop, ok := liquidItem.(interface{ SetContext(*Context) }); ok {
-				drop.SetContext(it.context)
-			}
-		}
+		// Convert to liquid, as Ruby's InputIterator yields each item's to_liquid
+		liquidItem := ToLiquidValue(ToLiquid(item))
 
 		fn(liquidItem)
 	}
@@ -799,7 +288,7 @@ func (it *InputIterator) Concat(args interface{}) []interface{} {
 		v := reflect.ValueOf(args)
 		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
 			for i := 0; i < v.Len(); i++ {
-				result = append(result, v.Index(i).Interface())
+				result = append(result, itemAt(v, i))
 			}
 		}
 	}
@@ -870,16 +359,15 @@ func nilSafeCompare(a, b interface{}) int {
 		return -1 // nil goes last
 	}
 
-	// Try numeric comparison first
-	aNum, aOk := ToNumberValue(a)
-	bNum, bOk := ToNumberValue(b)
+	// Numbers compare as numbers; strings, numeric strings included, as strings (Ruby <=>)
+	aNum, aOk := asNumber(a)
+	bNum, bOk := asNumber(b)
 	if aOk && bOk {
-		if aNum < bNum {
-			return -1
-		} else if aNum > bNum {
-			return 1
-		}
-		return 0
+		cmp, _ := compareNumbers(aNum, bNum)
+		return cmp
+	}
+	if (aOk || isBigInt(a)) && (bOk || isBigInt(b)) {
+		return compareBigInts(a, b)
 	}
 
 	// String comparison
@@ -944,73 +432,6 @@ func nilSafeCasecmp(a, b interface{}) int {
 	return 0
 }
 
-// applyOperation applies a math operation to two numbers.
-// Mirrors Ruby's apply_operation from standardfilters.rb:1003-1006
-func applyOperation(input, operand interface{}, operation string) interface{} {
-	inputNum, _ := ToNumber(input)
-	operandNum, _ := ToNumber(operand)
-
-	var result interface{}
-
-	// Convert to float64 for calculation
-	var inputFloat, operandFloat float64
-	switch v := inputNum.(type) {
-	case int:
-		inputFloat = float64(v)
-	case float64:
-		inputFloat = v
-	default:
-		inputFloat = 0
-	}
-
-	switch v := operandNum.(type) {
-	case int:
-		operandFloat = float64(v)
-	case float64:
-		operandFloat = v
-	default:
-		operandFloat = 0
-	}
-
-	// Determine if we should return int or float
-	_, inputIsInt := inputNum.(int)
-	_, operandIsInt := operandNum.(int)
-
-	switch operation {
-	case "+":
-		result = inputFloat + operandFloat
-	case "-":
-		result = inputFloat - operandFloat
-	case "*":
-		result = inputFloat * operandFloat
-	case "/":
-		if operandFloat == 0 {
-			return 0 // Handle division by zero
-		}
-		result = inputFloat / operandFloat
-		// For division, if operand is int, result should be int
-		if operandIsInt && inputIsInt {
-			return int(inputFloat / operandFloat)
-		}
-	case "%":
-		if operandFloat == 0 {
-			return 0 // Handle modulo by zero
-		}
-		result = math.Mod(inputFloat, operandFloat)
-	default:
-		result = inputFloat
-	}
-
-	// Return int if both inputs are ints (except for division)
-	if inputIsInt && operandIsInt && operation != "/" {
-		if f, ok := result.(float64); ok {
-			return int(f)
-		}
-	}
-
-	return result
-}
-
 // raisePropertyError creates an ArgumentError for invalid properties.
 func raisePropertyError(property interface{}) error {
 	return NewArgumentError("cannot select the property '" + ToS(property, nil) + "'")
@@ -1018,570 +439,15 @@ func raisePropertyError(property interface{}) error {
 
 // Array Filters
 
-// Reverse reverses the order of items in an array.
-// Mirrors Ruby's reverse from standardfilters.rb:523
-func (sf *StandardFilters) Reverse(input interface{}) []interface{} {
-	iter := NewInputIterator(input, sf.context)
-	return iter.Reverse()
+// firstChar is Ruby's s[0] || "": the first character of s, or "" for an
+// empty string (Shopify Liquid 5.14, as ActiveSupport's String#first).
+func firstChar(s string) string {
+	_, size := utf8.DecodeRuneInString(s)
+	return s[:size]
 }
 
-// Sort sorts items in an array.
-// Mirrors Ruby's sort from standardfilters.rb:378
-func (sf *StandardFilters) Sort(input interface{}, property interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-	arr := iter.ToArray()
-
-	if len(arr) == 0 {
-		return []interface{}{}
-	}
-
-	// If no property, sort items directly
-	if property == nil {
-		sorted := make([]interface{}, len(arr))
-		copy(sorted, arr)
-		sort.SliceStable(sorted, func(i, j int) bool {
-			return nilSafeCompare(sorted[i], sorted[j]) < 0
-		})
-		return sorted
-	}
-
-	// Sort by property
-	propStr := ToS(property, nil)
-
-	// Check if all items support indexing
-	for _, item := range arr {
-		if !supportsIndexing(item) {
-			return nil
-		}
-	}
-
-	sorted := make([]interface{}, len(arr))
-	copy(sorted, arr)
-
-	sort.SliceStable(sorted, func(i, j int) bool {
-		a := getProperty(sorted[i], propStr)
-		b := getProperty(sorted[j], propStr)
-		return nilSafeCompare(a, b) < 0
-	})
-
-	return sorted
-}
-
-// SortNatural sorts items case-insensitively.
-// Mirrors Ruby's sort_natural from standardfilters.rb:407
-func (sf *StandardFilters) SortNatural(input interface{}, property interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-	arr := iter.ToArray()
-
-	if len(arr) == 0 {
-		return []interface{}{}
-	}
-
-	// If no property, sort items directly
-	if property == nil {
-		sorted := make([]interface{}, len(arr))
-		copy(sorted, arr)
-		sort.SliceStable(sorted, func(i, j int) bool {
-			return nilSafeCasecmp(sorted[i], sorted[j]) < 0
-		})
-		return sorted
-	}
-
-	// Sort by property
-	propStr := ToS(property, nil)
-
-	// Check if all items support indexing
-	for _, item := range arr {
-		if !supportsIndexing(item) {
-			return nil
-		}
-	}
-
-	sorted := make([]interface{}, len(arr))
-	copy(sorted, arr)
-
-	sort.SliceStable(sorted, func(i, j int) bool {
-		a := getProperty(sorted[i], propStr)
-		b := getProperty(sorted[j], propStr)
-		return nilSafeCasecmp(a, b) < 0
-	})
-
-	return sorted
-}
-
-// Uniq removes duplicate items from an array.
-// Mirrors Ruby's uniq from standardfilters.rb:497
-func (sf *StandardFilters) Uniq(input interface{}, property interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return []interface{}{}
-	}
-
-	if property == nil {
-		return iter.Uniq(nil)
-	}
-
-	// Uniq by property
-	propStr := ToS(property, nil)
-	return iter.Uniq(func(item interface{}) interface{} {
-		return getProperty(item, propStr)
-	})
-}
-
-// Compact removes nil items from an array.
-// Mirrors Ruby's compact from standardfilters.rb:557
-func (sf *StandardFilters) Compact(input interface{}, property interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return []interface{}{}
-	}
-
-	if property == nil {
-		return iter.Compact()
-	}
-
-	// Compact by property - remove items where property is nil
-	propStr := ToS(property, nil)
-	result := make([]interface{}, 0)
-
-	iter.Each(func(item interface{}) {
-		if !supportsIndexing(item) {
-			return
-		}
-		val := getProperty(item, propStr)
-		if val != nil {
-			result = append(result, item)
-		}
-	})
-
-	return result
-}
-
-// Map extracts property values from array items.
-// Mirrors Ruby's map from standardfilters.rb:535
-func (sf *StandardFilters) Map(input interface{}, property interface{}) (interface{}, error) {
-	if property == nil {
-		return nil, raisePropertyError(property)
-	}
-
-	iter := NewInputIterator(input, sf.context)
-	propStr := ToS(property, nil)
-	result := make([]interface{}, 0)
-
-	iter.Each(func(item interface{}) {
-		// Special case for "to_liquid"
-		if propStr == "to_liquid" {
-			result = append(result, item)
-			return
-		}
-
-		if !supportsIndexing(item) {
-			result = append(result, nil)
-			return
-		}
-
-		val := getProperty(item, propStr)
-		result = append(result, val)
-	})
-
-	return result, nil
-}
-
-// Where filters array items by property value.
-// Mirrors Ruby's where from standardfilters.rb:434
-func (sf *StandardFilters) Where(input interface{}, property interface{}, targetValue interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return []interface{}{}
-	}
-
-	if property == nil {
-		return nil
-	}
-
-	propStr := ToS(property, nil)
-	result := make([]interface{}, 0)
-
-	iter.Each(func(item interface{}) {
-		if !supportsIndexing(item) {
-			return
-		}
-
-		val := getProperty(item, propStr)
-
-		// If no target value, filter by truthiness
-		if targetValue == nil {
-			if isTruthy(val) {
-				result = append(result, item)
-			}
-		} else {
-			// Filter by exact match
-			if valuesEqual(val, targetValue) {
-				result = append(result, item)
-			}
-		}
-	})
-
-	return result
-}
-
-// Reject filters out array items by property value.
-// Mirrors Ruby's reject from standardfilters.rb:447
-func (sf *StandardFilters) Reject(input interface{}, property interface{}, targetValue interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return []interface{}{}
-	}
-
-	if property == nil {
-		return nil
-	}
-
-	propStr := ToS(property, nil)
-	result := make([]interface{}, 0)
-
-	iter.Each(func(item interface{}) {
-		if !supportsIndexing(item) {
-			return
-		}
-
-		val := getProperty(item, propStr)
-
-		// If no target value, reject by truthiness
-		if targetValue == nil {
-			if !isTruthy(val) {
-				result = append(result, item)
-			}
-		} else {
-			// Reject by exact match
-			if !valuesEqual(val, targetValue) {
-				result = append(result, item)
-			}
-		}
-	})
-
-	return result
-}
-
-// Has tests if any array item has a property value.
-// Mirrors Ruby's has from standardfilters.rb:460
-func (sf *StandardFilters) Has(input interface{}, property interface{}, targetValue interface{}) bool {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return false
-	}
-
-	if property == nil {
-		return false
-	}
-
-	propStr := ToS(property, nil)
-	found := false
-
-	iter.Each(func(item interface{}) {
-		if found {
-			return
-		}
-
-		if !supportsIndexing(item) {
-			return
-		}
-
-		val := getProperty(item, propStr)
-
-		// If no target value, check truthiness
-		if targetValue == nil {
-			if isTruthy(val) {
-				found = true
-			}
-		} else {
-			// Check exact match
-			if valuesEqual(val, targetValue) {
-				found = true
-			}
-		}
-	})
-
-	return found
-}
-
-// Find returns the first array item with a property value.
-// Mirrors Ruby's find from standardfilters.rb:473
-func (sf *StandardFilters) Find(input interface{}, property interface{}, targetValue interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return nil
-	}
-
-	if property == nil {
-		return nil
-	}
-
-	propStr := ToS(property, nil)
-	var result interface{}
-
-	iter.Each(func(item interface{}) {
-		if result != nil {
-			return
-		}
-
-		if !supportsIndexing(item) {
-			return
-		}
-
-		val := getProperty(item, propStr)
-
-		// If no target value, find by truthiness
-		if targetValue == nil {
-			if isTruthy(val) {
-				result = item
-			}
-		} else {
-			// Find by exact match
-			if valuesEqual(val, targetValue) {
-				result = item
-			}
-		}
-	})
-
-	return result
-}
-
-// FindIndex returns the index of the first array item with a property value.
-// Mirrors Ruby's find_index from standardfilters.rb:486
-func (sf *StandardFilters) FindIndex(input interface{}, property interface{}, targetValue interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return nil
-	}
-
-	if property == nil {
-		return nil
-	}
-
-	propStr := ToS(property, nil)
-	arr := iter.ToArray()
-
-	for i, item := range arr {
-		if !supportsIndexing(item) {
-			continue
-		}
-
-		val := getProperty(item, propStr)
-
-		// If no target value, find by truthiness
-		if targetValue == nil {
-			if isTruthy(val) {
-				return i
-			}
-		} else {
-			// Find by exact match
-			if valuesEqual(val, targetValue) {
-				return i
-			}
-		}
-	}
-
-	return nil
-}
-
-// Concat concatenates two arrays.
-// Mirrors Ruby's concat from standardfilters.rb:682
-func (sf *StandardFilters) Concat(input interface{}, array interface{}) (interface{}, error) {
-	// Validate that second argument is an array
-	isArray := false
-	if _, ok := array.([]interface{}); ok {
-		isArray = true
-	} else if array != nil {
-		// Reflection fallback for typed slices ([]BlogPost, []string, []int, etc.)
-		v := reflect.ValueOf(array)
-		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-			isArray = true
-		}
-	}
-
-	if !isArray {
-		return nil, NewArgumentError("concat filter requires an array argument")
-	}
-
-	iter := NewInputIterator(input, sf.context)
-	return iter.Concat(array), nil
-}
-
-// Sum returns the sum of array elements.
-// Mirrors Ruby's sum from standardfilters.rb:953
-func (sf *StandardFilters) Sum(input interface{}, property interface{}) interface{} {
-	iter := NewInputIterator(input, sf.context)
-
-	if iter.Empty() {
-		return 0
-	}
-
-	var sum float64
-	hasFloat := false
-
-	if property == nil {
-		// Sum items directly
-		iter.Each(func(item interface{}) {
-			num, _ := ToNumber(item)
-			switch v := num.(type) {
-			case int:
-				sum += float64(v)
-			case float64:
-				sum += v
-				hasFloat = true
-			}
-		})
-	} else {
-		// Sum by property
-		propStr := ToS(property, nil)
-		iter.Each(func(item interface{}) {
-			if !supportsIndexing(item) {
-				return
-			}
-
-			val := getProperty(item, propStr)
-			if val == nil {
-				return
-			}
-
-			num, _ := ToNumber(val)
-			switch v := num.(type) {
-			case int:
-				sum += float64(v)
-			case float64:
-				sum += v
-				hasFloat = true
-			}
-		})
-	}
-
-	// Return int if no floats were encountered
-	if !hasFloat && sum == float64(int(sum)) {
-		return int(sum)
-	}
-
-	return sum
-}
-
-// Helper functions for array filters
-
-// supportsIndexing checks if an item supports property access.
-func supportsIndexing(item interface{}) bool {
-	if item == nil {
-		return false
-	}
-
-	switch item.(type) {
-	case map[string]interface{}:
-		return true
-	default:
-		// Check if it has indexable methods via reflection
-		v := reflect.ValueOf(item)
-		if v.Kind() == reflect.Map || v.Kind() == reflect.Struct {
-			return true
-		}
-		// Check for Drop interface
-		if _, ok := item.(interface{ Get(string) interface{} }); ok {
-			return true
-		}
-	}
-
-	return false
-}
-
-// getProperty gets a property value from an item.
-func getProperty(item interface{}, property string) interface{} {
-	if item == nil {
-		return nil
-	}
-
-	// Try map access
-	if m, ok := item.(map[string]interface{}); ok {
-		return m[property]
-	}
-
-	// Try Drop interface
-	if drop, ok := item.(interface{ Get(string) interface{} }); ok {
-		return drop.Get(property)
-	}
-
-	// For structs, use InvokeDropOn which handles:
-	// - snake_case to CamelCase conversion (comments_count -> CommentsCount)
-	// - Method calls
-	// - Field access on both pointer and non-pointer structs
-	v := reflect.ValueOf(item)
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-
-	if v.Kind() == reflect.Struct {
-		result := InvokeDropOn(item, property)
-		if result != nil {
-			return result
-		}
-	}
-
-	return nil
-}
-
-// isTruthy checks if a value is truthy in Liquid context.
-func isTruthy(val interface{}) bool {
-	if val == nil {
-		return false
-	}
-
-	if b, ok := val.(bool); ok {
-		return b
-	}
-
-	// Empty strings and arrays are falsy
-	switch v := val.(type) {
-	case string:
-		return v != ""
-	case []interface{}:
-		return len(v) > 0
-	case map[string]interface{}:
-		return len(v) > 0
-	}
-
-	// Reflection fallback for typed slices/arrays/maps
-	// This matches Ruby's duck-typing behavior: empty collections are falsy
-	if val != nil {
-		v := reflect.ValueOf(val)
-		kind := v.Kind()
-		if kind == reflect.Slice || kind == reflect.Array || kind == reflect.Map {
-			return v.Len() > 0
-		}
-	}
-
-	return true
-}
-
-// valuesEqual compares two values for equality.
-func valuesEqual(a, b interface{}) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-
-	// Direct comparison
-	if a == b {
-		return true
-	}
-
-	// String comparison
-	aStr := ToS(a, nil)
-	bStr := ToS(b, nil)
-
-	return aStr == bStr
+// lastChar is Ruby's s[-1] || "": the last character of s, or "".
+func lastChar(s string) string {
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[len(s)-size:]
 }

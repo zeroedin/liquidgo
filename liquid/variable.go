@@ -1,16 +1,25 @@
 package liquid
 
 import (
+	"fmt"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 var (
-	variableFilterMarkupRegex        = regexp.MustCompile(`\|\s*(.*)`)
-	variableFilterParser             = regexp.MustCompile(`(?:\s+|"[^"]*"|'[^']*'|(?:[^\s,\|'"]|"[^"]*"|'[^']*')+)+`)
-	variableFilterArgsRegex          = regexp.MustCompile(`(?::|,)\s*((?:\w+\s*:\s*)?(?:[^\s,\|'"]|"[^"]*"|'[^']*')+)`)
-	variableJustTagAttributes        = regexp.MustCompile(`^(\w[\w-]*)\s*:\s*((?:"[^"]*"|'[^']*'|(?:[^\s,\|'"]|"[^"]*"|'[^']*')+)+)$`)
-	variableMarkupWithQuotedFragment = regexp.MustCompile(`^([^\|]+)(.*)$`)
+	variableFilterMarkupRegex = regexp.MustCompile(`(?s)\|\s*(.*)`)
+	// Ruby's FilterParser, /(?:\s+|#{QuotedFragment}|#{ArgumentSeparator})+/o
+	variableFilterParser = regexp.MustCompile(`(?:\s+|(?:` + QuotedFragment.String() + `)|,)+`)
+	variableFilterName   = regexp.MustCompile(`\w+`)
+	// Ruby's FilterArgsRegex: a quoted string is tried before a fragment,
+	// as the alternation of QuotedFragment orders them
+	variableFilterArgsRegex   = regexp.MustCompile(`(?::|,)\s*((?:\w+\s*:\s*)?(?:` + QuotedFragment.String() + `))`)
+	variableJustTagAttributes = regexp.MustCompile(`^(\w[\w-]*)\s*:\s*((?:"[^"]*"|'[^']*'|(?:[^\s,\|'"]|"[^"]*"|'[^']*')+)+)$`)
+	// Ruby's MarkupWithQuotedFragment, /(#{QuotedFragment})(.*)/om: the
+	// name is the first fragment of the markup, wherever it starts
+	variableMarkupWithQuotedFragment = regexp.MustCompile(`(?s)(` + QuotedFragment.String() + `)(.*)`)
 )
 
 // ParseContextInterface interface for parsing expressions
@@ -29,7 +38,7 @@ type ParseContextInterface interface {
 	DecrementDepth()
 	NewBlockBody() *BlockBody
 	NewTokenizer(source string, lineNumbers bool, startLineNumber *int, forLiquidTag bool) *Tokenizer
-	ErrorMode() string
+	ErrorMode() ErrorMode
 	AddWarning(error)
 }
 
@@ -56,29 +65,7 @@ func NewVariable(markup string, parseContext ParseContextInterface) *Variable {
 		lineNumber:   lineNum,
 	}
 
-	// Use parser switching based on error mode
-	// Create a wrapper that implements the ParserSwitching interface
-	var psContext interface {
-		ErrorMode() string
-		AddWarning(error)
-	}
-	if pc, ok := parseContext.(*ParseContext); ok {
-		psContext = pc
-	} else {
-		// Fallback: create a minimal wrapper
-		psContext = &parseContextWrapper{
-			errorMode: "lax", // Default to lax if we can't determine
-		}
-	}
-
-	ps := &ParserSwitching{
-		parseContext:  psContext,
-		lineNumber:    lineNum,
-		markupContext: v.markupContext,
-	}
-
-	err := ps.StrictParseWithErrorModeFallback(
-		markup,
+	err := parseWithErrorModeFallback(parseContext, markup, lineNum, v.markupContext,
 		func(m string) error {
 			// Catch panics from SafeParseExpression and convert to errors
 			var parseErr error
@@ -174,14 +161,19 @@ func (v *Variable) laxParse(markup string) {
 				if f == "" {
 					continue
 				}
-				// Extract filter name (first word)
-				parts := strings.Fields(f)
-				if len(parts) == 0 {
+				// The filter name is the first word of the filter, as
+				// Ruby's f =~ /\w+/
+				filterName := variableFilterName.FindString(f)
+				if filterName == "" {
 					continue
 				}
-				filterName := parts[0]
-				// Extract filter args
-				filterArgs := variableFilterArgsRegex.FindAllString(f, -1)
+				// The arguments are the captures of FilterArgsRegex, as
+				// Ruby's f.scan(FilterArgsRegex).flatten: without the
+				// separator before each
+				var filterArgs []string
+				for _, m := range variableFilterArgsRegex.FindAllStringSubmatch(f, -1) {
+					filterArgs = append(filterArgs, m[1])
+				}
 				v.filters = append(v.filters, v.laxParseFilterExpressions(filterName, filterArgs))
 			}
 		}
@@ -211,7 +203,9 @@ func (v *Variable) strictParse(markup string) error {
 		}
 		var filterArgs []string
 		if _, ok := p.ConsumeOptional(":colon"); ok {
-			filterArgs = v.parseFilterArgs(p)
+			if filterArgs, err = v.parseFilterArgs(p); err != nil {
+				return err
+			}
 		} else {
 			filterArgs = []string{}
 		}
@@ -250,10 +244,12 @@ func (v *Variable) rigidParse(markup string) error {
 	return nil
 }
 
-func (v *Variable) parseFilterArgs(p *Parser) []string {
+func (v *Variable) parseFilterArgs(p *Parser) ([]string, error) {
+	// as Ruby's parse_filterargs: an argument after the colon and after
+	// each comma, or a syntax error
 	arg, err := p.Argument()
 	if err != nil {
-		return []string{}
+		return nil, err
 	}
 	filterArgs := []string{arg}
 	for {
@@ -262,11 +258,12 @@ func (v *Variable) parseFilterArgs(p *Parser) []string {
 			break
 		}
 		arg, err := p.Argument()
-		if err == nil {
-			filterArgs = append(filterArgs, arg)
+		if err != nil {
+			return nil, err
 		}
+		filterArgs = append(filterArgs, arg)
 	}
-	return filterArgs
+	return filterArgs, nil
 }
 
 func (v *Variable) laxParseFilterExpressions(filterName string, unparsedArgs []string) []interface{} {
@@ -347,16 +344,26 @@ func (v *Variable) Evaluate(context *Context) interface{} {
 }
 
 func (v *Variable) Render(context TagContext) interface{} {
+	return v.render(context, nil)
+}
+
+// render is Render; with safe set, it also reports whether the value is HTML that
+// the output escape writes as it is (see escapeTracker).
+func (v *Variable) render(context TagContext, safe *escapeTracker) interface{} {
 	// Evaluate the variable name expression directly (like Ruby: context.evaluate(@name))
 	nameExpr := v.Name()
 	value := context.Evaluate(nameExpr)
+	safe.start(value)
 
 	// Apply filters
 	for _, filter := range v.Filters() {
 		if len(filter) == 0 {
 			continue
 		}
-		filterName := ToS(filter[0], nil)
+		filterName, ok := filter[0].(string)
+		if !ok {
+			filterName = ToS(filter[0], nil)
+		}
 		var filterArgs []interface{}
 		if len(filter) > 1 {
 			if args, ok := filter[1].([]interface{}); ok {
@@ -364,72 +371,128 @@ func (v *Variable) Render(context TagContext) interface{} {
 			}
 		}
 
-		// Evaluate filter arguments
-		evaluatedArgs := make([]interface{}, len(filterArgs))
-		for i, arg := range filterArgs {
-			evaluatedArgs[i] = context.Evaluate(arg)
+		// Evaluate filter arguments; a filter without any gets none, and a
+		// standard filter without keyword arguments the context's slice,
+		// so that its call allocates nothing for them
+		ctx, isContext := context.(*Context)
+		var fn FilterFunc
+		var standard bool
+		if isContext {
+			fn, standard = ctx.resolveFilter(filterName)
+		}
+		var evaluatedArgs, lent []interface{}
+		if len(filterArgs) > 0 {
+			if standard && len(filter) <= 2 {
+				lent = ctx.lendFilterArgs(len(filterArgs))
+				evaluatedArgs = lent
+			}
+			if evaluatedArgs == nil {
+				evaluatedArgs = make([]interface{}, len(filterArgs), len(filterArgs)+1)
+			}
+			for i, arg := range filterArgs {
+				evaluatedArgs[i] = context.Evaluate(arg)
+			}
 		}
 
-		// Invoke filter
-		value = context.Invoke(filterName, value, evaluatedArgs...)
-	}
+		// Keyword arguments are passed as one trailing map, as in Ruby
+		// (default: "x", allow_false: true calls default(input, "x", {"allow_false" => true}))
+		if len(filter) > 2 {
+			if keywordArgs, ok := filter[2].(map[string]interface{}); ok && len(keywordArgs) > 0 {
+				evaluated := make(map[string]interface{}, len(keywordArgs))
+				for key, arg := range keywordArgs {
+					evaluated[key] = context.Evaluate(arg)
+				}
+				evaluatedArgs = append(evaluatedArgs, evaluated)
+			}
+		}
 
-	// Apply global filter (like Ruby: context.apply_global_filter(obj))
-	ctx := context.Context().(*Context)
-	value = ctx.ApplyGlobalFilter(value)
+		// Invoke filter, resolved once above
+		if isContext {
+			value = ctx.invokeFilter(filterName, fn, value, evaluatedArgs)
+		} else {
+			value = context.Invoke(filterName, value, evaluatedArgs...)
+		}
+		if lent != nil {
+			ctx.returnFilterArgs(lent)
+		}
+		safe.filter(filterName, filterArgs)
+	}
 
 	return value
 }
 
-// RenderToOutputBuffer renders the variable to the output buffer.
-func (v *Variable) RenderToOutputBuffer(context TagContext, output *string) {
-	// Catch panics from drop method invocations and convert to error messages
-	defer func() {
-		if r := recover(); r != nil {
-			// Get the context to handle errors
-			ctxInterface := context.Context()
-			ctx, ok := ctxInterface.(*Context)
-			if !ok {
-				// If we can't get the context, just output a generic error
-				*output += "Liquid error: internal"
-				return
-			}
+// RenderToOutput writes the value of the variable to output. With the
+// environment's output escape on (see EnvironmentConfig.OutputEscape), the
+// written text is HTML-escaped unless it is HTML on purpose (see
+// escapeTracker).
+func (v *Variable) RenderToOutput(context TagContext, output *OutputBuffer) {
+	ctx, ok := context.Context().(*Context)
+	if !ok || !ctx.OutputEscape() {
+		WriteValue(output, v.Render(context))
+		return
+	}
+	safe := &escapeTracker{ctx: ctx}
+	value := v.render(context, safe)
+	if safe.safe {
+		WriteValue(output, value)
+		return
+	}
+	writeValue(escapingWriter{output}, value, nil)
+}
 
-			// Convert panic to error
-			var err error
-			switch e := r.(type) {
-			case LiquidError:
-				err = e
-			case *Error:
-				err = e
-			case error:
-				// Non-Liquid errors should be wrapped as InternalError
-				err = NewInternalError("internal")
-			default:
-				// Non-error panics should be wrapped as InternalError
-				err = NewInternalError("internal")
-			}
+// stringWriter is what writeValue writes to: the output buffer, or a writer
+// that escapes on the way.
+type stringWriter interface {
+	WriteString(s string)
+}
 
-			// Handle the error and append the error message to output
-			errorMsg := ctx.HandleError(err, v.lineNumber)
-			*output += errorMsg
+// WriteValue writes a value to output as Ruby's render_obj_to_output: nil
+// writes nothing, and an array writes its items one after the other, nested
+// arrays included. An array that holds itself is not written again inside
+// itself.
+func WriteValue(output *OutputBuffer, value interface{}) {
+	writeValue(output, value, nil)
+}
+
+func writeValue(output stringWriter, value interface{}, seen map[uintptr]bool) {
+	value = ToLiquid(value)
+	switch v := value.(type) {
+	case nil:
+		return
+	case string:
+		output.WriteString(v)
+		return
+	case int:
+		output.WriteString(strconv.Itoa(v)) // as ToS, without its method lookups
+		return
+	case []interface{}:
+		if len(v) == 0 {
+			return
 		}
-	}()
-
-	val := v.Render(context)
-	*output += ToS(val, nil)
-}
-
-// parseContextWrapper is a minimal wrapper for ParseContextInterface when it doesn't implement ErrorMode/AddWarning.
-type parseContextWrapper struct {
-	errorMode string
-}
-
-func (p *parseContextWrapper) ErrorMode() string {
-	return p.errorMode
-}
-
-func (p *parseContextWrapper) AddWarning(err error) {
-	// No-op for wrapper
-	_ = err // no-op to register coverage
+		ptr := reflect.ValueOf(v).Pointer()
+		if seen[ptr] {
+			return
+		}
+		if seen == nil {
+			seen = make(map[uintptr]bool)
+		}
+		seen[ptr] = true
+		defer delete(seen, ptr)
+		for _, item := range v {
+			writeValue(output, item, seen)
+		}
+		return
+	}
+	if _, ok := value.(fmt.Stringer); ok {
+		// A value with a String method renders it, even a slice or an array
+		output.WriteString(ToS(value, nil))
+		return
+	}
+	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+		for i := 0; i < rv.Len(); i++ {
+			writeValue(output, rv.Index(i).Interface(), seen)
+		}
+		return
+	}
+	output.WriteString(ToS(value, nil))
 }

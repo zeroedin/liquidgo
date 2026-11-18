@@ -3,8 +3,9 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/internal/methodfilters"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // FunnyFilter provides test filters for output tests
@@ -91,9 +92,7 @@ func TestOutput_VariablePiping(t *testing.T) {
 	text := ` {{ car.gm | make_funny }} `
 	expected := ` LOL `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -102,7 +101,7 @@ func TestOutput_VariablePiping(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment: env,
 		StaticEnvironments: []map[string]interface{}{{
 			"car": map[string]interface{}{
@@ -111,9 +110,9 @@ func TestOutput_VariablePiping(t *testing.T) {
 			},
 		}},
 		RethrowErrors: false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -125,9 +124,7 @@ func TestOutput_VariablePipingWithInput(t *testing.T) {
 	text := ` {{ car.gm | cite_funny }} `
 	expected := ` LOL: bad `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -136,7 +133,7 @@ func TestOutput_VariablePipingWithInput(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment: env,
 		StaticEnvironments: []map[string]interface{}{{
 			"car": map[string]interface{}{
@@ -145,9 +142,9 @@ func TestOutput_VariablePipingWithInput(t *testing.T) {
 			},
 		}},
 		RethrowErrors: false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -159,9 +156,7 @@ func TestOutput_VariablePipingWithArgs(t *testing.T) {
 	text := ` {{ car.gm | add_smiley: ':-(' }} `
 	expected := ` bad :-( `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -170,7 +165,7 @@ func TestOutput_VariablePipingWithArgs(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment: env,
 		StaticEnvironments: []map[string]interface{}{{
 			"car": map[string]interface{}{
@@ -179,9 +174,9 @@ func TestOutput_VariablePipingWithArgs(t *testing.T) {
 			},
 		}},
 		RethrowErrors: false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -193,9 +188,7 @@ func TestOutput_VariablePipingWithNoArgs(t *testing.T) {
 	text := ` {{ car.gm | add_smiley }} `
 	expected := ` bad :-) `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -204,7 +197,7 @@ func TestOutput_VariablePipingWithNoArgs(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment: env,
 		StaticEnvironments: []map[string]interface{}{{
 			"car": map[string]interface{}{
@@ -213,9 +206,9 @@ func TestOutput_VariablePipingWithNoArgs(t *testing.T) {
 			},
 		}},
 		RethrowErrors: false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -227,9 +220,7 @@ func TestOutput_MultipleVariablePipingWithArgs(t *testing.T) {
 	text := ` {{ car.gm | add_smiley: ':-(' | add_smiley: ':-('}} `
 	expected := ` bad :-( :-( `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -238,7 +229,7 @@ func TestOutput_MultipleVariablePipingWithArgs(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment: env,
 		StaticEnvironments: []map[string]interface{}{{
 			"car": map[string]interface{}{
@@ -247,9 +238,9 @@ func TestOutput_MultipleVariablePipingWithArgs(t *testing.T) {
 			},
 		}},
 		RethrowErrors: false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -261,9 +252,7 @@ func TestOutput_VariablePipingWithMultipleArgs(t *testing.T) {
 	text := ` {{ car.gm | add_tag: 'span', 'bar'}} `
 	expected := ` <span id="bar">bad</span> `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -272,7 +261,7 @@ func TestOutput_VariablePipingWithMultipleArgs(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment: env,
 		StaticEnvironments: []map[string]interface{}{{
 			"car": map[string]interface{}{
@@ -281,9 +270,9 @@ func TestOutput_VariablePipingWithMultipleArgs(t *testing.T) {
 			},
 		}},
 		RethrowErrors: false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -295,9 +284,7 @@ func TestOutput_VariablePipingWithVariableArgs(t *testing.T) {
 	text := ` {{ car.gm | add_tag: 'span', car.bmw}} `
 	expected := ` <span id="good">bad</span> `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -306,7 +293,7 @@ func TestOutput_VariablePipingWithVariableArgs(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment: env,
 		StaticEnvironments: []map[string]interface{}{{
 			"car": map[string]interface{}{
@@ -315,9 +302,9 @@ func TestOutput_VariablePipingWithVariableArgs(t *testing.T) {
 			},
 		}},
 		RethrowErrors: false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -330,9 +317,7 @@ func TestOutput_MultiplePipings(t *testing.T) {
 	text := ` {{ best_cars | cite_funny | paragraph }} `
 	expected := ` <p>LOL: bmw</p> `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -341,13 +326,13 @@ func TestOutput_MultiplePipings(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{assigns},
 		RethrowErrors:      false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}
@@ -359,9 +344,7 @@ func TestOutput_LinkTo(t *testing.T) {
 	text := ` {{ 'Typo' | link_to: 'http://typo.leetsoft.com' }} `
 	expected := ` <a href="http://typo.leetsoft.com">Typo</a> `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
-	_ = env.RegisterFilter(&FunnyFilter{})
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: methodfilters.Of(&FunnyFilter{})})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -370,13 +353,13 @@ func TestOutput_LinkTo(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{},
 		RethrowErrors:      false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	if output != expected {
 		t.Errorf("Expected %q, got %q", expected, output)
 	}

@@ -2,10 +2,12 @@ package tags
 
 import (
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var (
@@ -50,7 +52,7 @@ func NewTableRowTag(tagName, markup string, parseContext liquid.ParseContextInte
 func (t *TableRowTag) parseMarkup(markup string, parseContext liquid.ParseContextInterface) error {
 	matches := tableRowSyntax.FindStringSubmatch(markup)
 	if len(matches) == 0 {
-		return liquid.NewSyntaxError("invalid table_row tag syntax")
+		return liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.table_row", nil)
 	}
 
 	t.variableName = matches[1]
@@ -64,11 +66,9 @@ func (t *TableRowTag) parseMarkup(markup string, parseContext liquid.ParseContex
 	for _, match := range attributeMatches {
 		if len(match) >= 3 {
 			key := strings.TrimSpace(match[1])
+			// the value is parsed as Ruby parses it: "a" is a string, not
+			// the variable a
 			value := strings.TrimSpace(match[2])
-			// Remove quotes if present
-			if len(value) > 0 && (value[0] == '"' || value[0] == '\'') {
-				value = value[1 : len(value)-1]
-			}
 
 			// Validate attribute
 			if !allowedAttributes[key] {
@@ -103,71 +103,38 @@ func (t *TableRowTag) Attributes() map[string]interface{} {
 	return t.attributes
 }
 
-// RenderToOutputBuffer renders the table_row tag.
-func (t *TableRowTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the table_row tag.
+func (t *TableRowTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	// Evaluate collection
+	// As Ruby, a tablerow over nil or false renders nothing
 	collection := context.Evaluate(t.collectionName)
-	if collection == nil {
-		*output += "<tr class=\"row1\">\n</tr>\n"
+	if collection == nil || collection == false {
 		return
 	}
 
-	// Calculate from (offset)
+	// As Ruby, the attributes are read with to_i: nil is 0, so a nil limit
+	// keeps no item and nil cols put every item in one row
 	var from int
 	if offsetAttr, ok := t.attributes["offset"]; ok {
-		offsetValue := context.Evaluate(offsetAttr)
-		if offsetValue != nil {
-			offsetInt, err := liquid.ToInteger(offsetValue)
-			if err != nil {
-				errorMsg := context.HandleError(liquid.NewArgumentError("invalid integer"), nil)
-				*output += errorMsg
-				return
-			}
-			from = offsetInt
-		}
+		from = tablerowInteger(context.Evaluate(offsetAttr))
 	}
-
-	// Calculate to (limit)
 	var to *int
 	if limitAttr, ok := t.attributes["limit"]; ok {
-		limitValue := context.Evaluate(limitAttr)
-		if limitValue != nil {
-			limitInt, err := liquid.ToInteger(limitValue)
-			if err != nil {
-				errorMsg := context.HandleError(liquid.NewArgumentError("invalid integer"), nil)
-				*output += errorMsg
-				return
-			}
-			toVal := from + limitInt
-			to = &toVal
-		}
+		toVal := addSaturated(from, tablerowInteger(context.Evaluate(limitAttr)))
+		to = &toVal
 	}
 
-	// Slice collection
-	segment := liquid.SliceCollection(collection, from, to)
-	length := len(segment)
+	// Slice collection; a range is iterated, not built
+	segment := sliceSegment(collection, from, to)
+	length := segment.Len()
 
-	// Calculate cols
-	var cols int
+	cols := length
 	if colsAttr, ok := t.attributes["cols"]; ok {
-		colsValue := context.Evaluate(colsAttr)
-		if colsValue != nil {
-			colsInt, err := liquid.ToInteger(colsValue)
-			if err != nil {
-				errorMsg := context.HandleError(liquid.NewArgumentError("invalid integer"), nil)
-				*output += errorMsg
-				return
-			}
-			cols = colsInt
-		} else {
-			cols = length
-		}
-	} else {
-		cols = length
+		cols = tablerowInteger(context.Evaluate(colsAttr))
 	}
 
 	// Start first row
-	*output += "<tr class=\"row1\">\n"
+	output.WriteString("<tr class=\"row1\">\n")
 
 	// Get underlying Context for Stack
 	ctx := context.Context().(*liquid.Context)
@@ -179,18 +146,21 @@ func (t *TableRowTag) RenderToOutputBuffer(context liquid.TagContext, output *st
 		ctx.Set("tablerowloop", tablerowloop)
 
 		// Iterate over segment
-		for _, item := range segment {
+		for i := 0; i < length; i++ {
+			ctx.CheckCanceled()
+			segment.chargeItem(ctx, t.Nodelist())
+
 			// Set variable
-			ctx.Set(t.variableName, item)
+			ctx.Set(t.variableName, segment.At(i))
 
 			// Output <td> tag
-			*output += fmt.Sprintf("<td class=\"col%d\">", tablerowloop.Col())
+			output.WriteString(fmt.Sprintf("<td class=\"col%d\">", tablerowloop.Col()))
 
 			// Render block body (equivalent to Ruby's 'super')
-			t.Block.RenderToOutputBuffer(context, output)
+			t.Block.RenderToOutput(context, output)
 
 			// Close </td>
-			*output += "</td>"
+			output.WriteString("</td>")
 
 			// Handle interrupts
 			if ctx.Interrupt() {
@@ -202,7 +172,7 @@ func (t *TableRowTag) RenderToOutputBuffer(context liquid.TagContext, output *st
 
 			// Check if we need to close row and start new one
 			if tablerowloop.ColLast() && !tablerowloop.Last() {
-				*output += fmt.Sprintf("</tr>\n<tr class=\"row%d\">", tablerowloop.Row()+1)
+				output.WriteString(fmt.Sprintf("</tr>\n<tr class=\"row%d\">", tablerowloop.Row()+1))
 			}
 
 			// Increment loop
@@ -211,5 +181,58 @@ func (t *TableRowTag) RenderToOutputBuffer(context liquid.TagContext, output *st
 	})
 
 	// Close last row
-	*output += "</tr>\n"
+	output.WriteString("</tr>\n")
+}
+
+// tablerowLeadingInteger is the integer a string starts with, as Ruby's
+// String#to_i reads it.
+var tablerowLeadingInteger = regexp.MustCompile(`^[ \t\n\v\f\r]*([+-]?[0-9]+(?:_[0-9]+)*)`)
+
+// tablerowInteger converts an attribute of tablerow as Ruby's to_i, which
+// the tag calls: nil is 0, a float is truncated, a string gives the integer
+// it starts with or 0, and a value without to_i (true, a list...) raises
+// invalid integer.
+func tablerowInteger(value interface{}) int {
+	switch v := value.(type) {
+	case nil:
+		return 0
+	case string:
+		m := tablerowLeadingInteger.FindStringSubmatch(v)
+		if m == nil {
+			return 0
+		}
+		n, err := strconv.ParseInt(strings.ReplaceAll(m[1], "_", ""), 10, 0)
+		if err != nil { // out of range: the bound, as Ruby's integers never overflow
+			if strings.HasPrefix(m[1], "-") {
+				return math.MinInt
+			}
+			return math.MaxInt
+		}
+		return int(n)
+	case float64:
+		return truncateFloat(v)
+	case float32:
+		return truncateFloat(float64(v))
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		n, err := liquid.ToInteger(v)
+		if err == nil {
+			return n
+		}
+	}
+	liquid.Raise(liquid.NewArgumentError("invalid integer"))
+	return 0
+}
+
+// truncateFloat is Ruby's Float#to_i, saturated to the int range; NaN and the
+// infinities raise FloatDomainError in Ruby, an invalid integer here.
+func truncateFloat(f float64) int {
+	switch {
+	case math.IsNaN(f) || math.IsInf(f, 0):
+		liquid.Raise(liquid.NewArgumentError("invalid integer"))
+	case f >= math.MaxInt:
+		return math.MaxInt
+	case f <= math.MinInt:
+		return math.MinInt
+	}
+	return int(f)
 }

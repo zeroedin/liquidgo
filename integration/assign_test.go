@@ -1,11 +1,10 @@
 package integration
 
 import (
-	"math"
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 func TestAssignWithHyphenInVariableName(t *testing.T) {
@@ -47,63 +46,61 @@ func TestExpressionWithWhitespaceInSquareBrackets(t *testing.T) {
 }
 
 func TestAssignScoreExceedingResourceLimit(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env) // Register tags for parsing
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	tmpl, err := liquid.ParseTemplate(`{% assign foo = 42 %}{% assign bar = 23 %}`, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
 	limit := 1
-	tmpl.SetResourceLimits(liquid.NewResourceLimits(liquid.ResourceLimitsConfig{
+	setRubyLimits(tmpl, liquid.ResourceLimitsConfig{
 		AssignScoreLimit: &limit,
-	}))
-	result := tmpl.Render(nil, &liquid.RenderOptions{})
+	})
+	result := renderRuby(tmpl, nil, &rubyOptions{})
 	if result != "Liquid error: Memory limits exceeded" {
 		t.Errorf("Expected memory limit error, got %q", result)
 	}
-	if !tmpl.ResourceLimits().Reached() {
+	if !rubyLimits(tmpl).Reached() {
 		t.Error("Expected resource limits to be reached")
 	}
 
 	limit = 2
-	tmpl.SetResourceLimits(liquid.NewResourceLimits(liquid.ResourceLimitsConfig{
+	setRubyLimits(tmpl, liquid.ResourceLimitsConfig{
 		AssignScoreLimit: &limit,
-	}))
-	result = tmpl.RenderBang(nil, &liquid.RenderOptions{})
+	})
+	result = renderRubyBang(tmpl, nil, &rubyOptions{})
 	if result != "" {
 		t.Errorf("Expected empty string, got %q", result)
 	}
-	if tmpl.ResourceLimits().AssignScore() == 0 {
+	if rubyLimits(tmpl).AssignScore() == 0 {
 		t.Error("Expected assign_score to be set")
 	}
 }
 
 func TestAssignScoreExceedingLimitFromCompositeObject(t *testing.T) {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env) // Register tags for parsing
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	tmpl, err := liquid.ParseTemplate(`{% assign foo = 'aaaa' | reverse %}`, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
 	limit := 3
-	tmpl.SetResourceLimits(liquid.NewResourceLimits(liquid.ResourceLimitsConfig{
+	setRubyLimits(tmpl, liquid.ResourceLimitsConfig{
 		AssignScoreLimit: &limit,
-	}))
-	result := tmpl.Render(nil, &liquid.RenderOptions{})
+	})
+	result := renderRuby(tmpl, nil, &rubyOptions{})
 	if result != "Liquid error: Memory limits exceeded" {
 		t.Errorf("Expected memory limit error, got %q", result)
 	}
-	if !tmpl.ResourceLimits().Reached() {
+	if !rubyLimits(tmpl).Reached() {
 		t.Error("Expected resource limits to be reached")
 	}
 
 	limit = 5
-	tmpl.SetResourceLimits(liquid.NewResourceLimits(liquid.ResourceLimitsConfig{
+	setRubyLimits(tmpl, liquid.ResourceLimitsConfig{
 		AssignScoreLimit: &limit,
-	}))
-	result = tmpl.RenderBang(nil, &liquid.RenderOptions{})
+	})
+	result = renderRubyBang(tmpl, nil, &rubyOptions{})
 	if result != "" {
 		t.Errorf("Expected empty string, got %q", result)
 	}
@@ -111,16 +108,21 @@ func TestAssignScoreExceedingLimitFromCompositeObject(t *testing.T) {
 
 // ObjectWrapperDrop is a drop that wraps an object for testing assign scores.
 type ObjectWrapperDrop struct {
-	*liquid.Drop
 	obj interface{}
 }
 
 // NewObjectWrapperDrop creates a new ObjectWrapperDrop.
 func NewObjectWrapperDrop(obj interface{}) *ObjectWrapperDrop {
-	return &ObjectWrapperDrop{
-		Drop: liquid.NewDrop(),
-		obj:  obj,
+	return &ObjectWrapperDrop{obj: obj}
+}
+
+// LiquidGet returns the key a template reads.
+func (o *ObjectWrapperDrop) LiquidGet(_ *liquid.Context, key string) (interface{}, bool, error) {
+	switch key {
+	case "value":
+		return o.Value(), true, nil
 	}
+	return nil, false, nil
 }
 
 // Value returns the wrapped object.
@@ -130,24 +132,20 @@ func (o *ObjectWrapperDrop) Value() interface{} {
 
 // assignScoreOf calculates the assign score for an object by assigning it and checking the score.
 func assignScoreOf(obj interface{}) int {
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env) // Register tags for parsing
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 	drop := NewObjectWrapperDrop(obj)
-	// Create resource limits with an unbounded limit so scoring is active
-	limit := math.MaxInt
-	rl := liquid.NewResourceLimits(liquid.ResourceLimitsConfig{
-		AssignScoreLimit: &limit,
-	})
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	// Create resource limits for tracking assign score
+	rl := liquid.ResourceLimitsConfig{}
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{{"drop": drop}},
-		ResourceLimits:     rl,
-	})
+		Limits:             &rl,
+	}
 	tmpl, err := liquid.ParseTemplate(`{% assign obj = drop.value %}`, &liquid.TemplateOptions{Environment: env})
 	if err != nil {
 		return 0
 	}
-	tmpl.RenderBang(ctx, &liquid.RenderOptions{})
+	renderRubyBang(tmpl, ctx, &rubyOptions{})
 	return ctx.ResourceLimits().AssignScore()
 }
 

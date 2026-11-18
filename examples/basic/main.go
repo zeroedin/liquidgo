@@ -1,9 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 func main() {
@@ -13,9 +14,12 @@ func main() {
 		panic(err)
 	}
 
-	output := tmpl.Render(map[string]interface{}{
+	res, err := tmpl.Render(context.Background(), map[string]interface{}{
 		"name": "World",
-	}, nil)
+	})
+	if err != nil {
+		panic(err)
+	}
 
-	fmt.Println(output) // Output: Hello World!
+	fmt.Println(res.Output) // Output: Hello World!
 }

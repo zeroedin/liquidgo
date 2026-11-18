@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
 var (
@@ -51,9 +51,13 @@ func NewForTag(tagName, markup string, parseContext liquid.ParseContextInterface
 
 // parseMarkup parses the for tag markup.
 func (f *ForTag) parseMarkup(markup string, parseContext liquid.ParseContextInterface) error {
+	// In strict mode, the markup is lexed first, as Ruby's strict parse
+	if err := lexCondition(strings.TrimSpace(markup), parseContext); err != nil {
+		return err
+	}
 	matches := forSyntax.FindStringSubmatch(markup)
 	if len(matches) == 0 {
-		return liquid.NewSyntaxError("invalid for tag syntax")
+		return liquid.NewSyntaxErrorFor(parseContext, "errors.syntax.for", nil)
 	}
 
 	f.variableName = matches[1]
@@ -71,11 +75,9 @@ func (f *ForTag) parseMarkup(markup string, parseContext liquid.ParseContextInte
 	for _, match := range attributeMatches {
 		if len(match) >= 3 {
 			key := strings.TrimSpace(match[1])
+			// the value is parsed as Ruby parses it: "a" is a string, not
+			// the variable a
 			value := strings.TrimSpace(match[2])
-			// Remove quotes if present
-			if len(value) > 0 && (value[0] == '"' || value[0] == '\'') {
-				value = value[1 : len(value)-1]
-			}
 			err := f.setAttribute(key, value, parseContext)
 			if err != nil {
 				return err
@@ -145,6 +147,12 @@ func (f *ForTag) Parse(tokenizer *liquid.Tokenizer) error {
 	return nil
 }
 
+// Blank reports whether the loop writes nothing, as Ruby's blank?: its body
+// and its else block are blank.
+func (f *ForTag) Blank() bool {
+	return f.forBlock.Blank() && (f.elseBlock == nil || f.elseBlock.Blank())
+}
+
 // parseBody parses a block body (for_block or else_block).
 // Returns (shouldContinue, error) where shouldContinue is true if we should continue parsing (didn't find endfor).
 func (f *ForTag) parseBody(tokenizer *liquid.Tokenizer, body *liquid.BlockBody) (bool, error) {
@@ -170,14 +178,16 @@ func (f *ForTag) parseBody(tokenizer *liquid.Tokenizer, body *liquid.BlockBody) 
 		}
 		if endTagName == "else" {
 			// Handle else - UnknownTag will create elseBlock if needed
-			err := f.UnknownTag(endTagName, endTagMarkup, tokenizer)
-			if err != nil {
-				return false
+			if err := f.UnknownTag(endTagName, endTagMarkup, tokenizer); err != nil {
+				panic(err)
 			}
 			return false // Stop parsing current block, continue with else block
 		}
-		// Unknown tag - let block handle it
-		return f.UnknownTag(endTagName, endTagMarkup, tokenizer) == nil
+		// Unknown tag: as Ruby's unknown_tag, a syntax error in every mode
+		if err := f.UnknownTag(endTagName, endTagMarkup, tokenizer); err != nil {
+			panic(err)
+		}
+		return true
 	}
 
 	err := body.Parse(tokenizer, parseContext, unknownTagHandler)
@@ -189,11 +199,11 @@ func (f *ForTag) parseBody(tokenizer *liquid.Tokenizer, body *liquid.BlockBody) 
 	return !foundEndTag, nil
 }
 
-// RenderToOutputBuffer renders the for tag.
-func (f *ForTag) RenderToOutputBuffer(context liquid.TagContext, output *string) {
+// RenderToOutput renders the for tag.
+func (f *ForTag) RenderToOutput(context liquid.TagContext, output *liquid.OutputBuffer) {
 	segment := f.collectionSegment(context)
 
-	if len(segment) == 0 {
+	if segment.Len() == 0 {
 		f.renderElse(context, output)
 	} else {
 		f.renderSegment(context, output, segment)
@@ -201,7 +211,7 @@ func (f *ForTag) RenderToOutputBuffer(context liquid.TagContext, output *string)
 }
 
 // collectionSegment gets the segment of the collection to iterate over.
-func (f *ForTag) collectionSegment(context liquid.TagContext) []interface{} {
+func (f *ForTag) collectionSegment(context liquid.TagContext) segment {
 	registers := context.Registers()
 
 	// Get or create offsets map
@@ -235,7 +245,7 @@ func (f *ForTag) collectionSegment(context liquid.TagContext) []interface{} {
 			var err error
 			from, err = liquid.ToInteger(fromValue)
 			if err != nil {
-				from = 0
+				liquid.Raise(liquid.NewArgumentError("invalid integer")) // as Ruby's Utils.to_integer
 			}
 		}
 	}
@@ -243,50 +253,35 @@ func (f *ForTag) collectionSegment(context liquid.TagContext) []interface{} {
 	// Evaluate collection
 	collection := context.Evaluate(f.collectionName)
 	if collection == nil {
-		return []interface{}{}
+		return segment{}
 	}
 
-	// Convert Range to array if needed
-	if r, ok := collection.(*liquid.Range); ok {
-		// Convert range to array
-		arr := []interface{}{}
-		for i := r.Start; i <= r.End; i++ {
-			arr = append(arr, i)
-		}
-		collection = arr
-	}
-
-	// Calculate to (limit)
+	// Calculate to (limit), saturated as Ruby's integers never overflow
 	var to *int
 	if f.limit != nil {
 		limitValue := context.Evaluate(f.limit)
 		if limitValue != nil {
 			limitInt, err := liquid.ToInteger(limitValue)
-			if err == nil {
-				toVal := from + limitInt
-				to = &toVal
+			if err != nil {
+				liquid.Raise(liquid.NewArgumentError("invalid integer")) // as Ruby's Utils.to_integer
 			}
+			toVal := addSaturated(from, limitInt)
+			to = &toVal
 		}
 	}
 
-	// Slice collection
-	segment := liquid.SliceCollection(collection, from, to)
-
-	// Reverse if needed
-	if f.reversed {
-		for i, j := 0, len(segment)-1; i < j; i, j = i+1, j-1 {
-			segment[i], segment[j] = segment[j], segment[i]
-		}
-	}
+	// A range is iterated, not built
+	seg := sliceSegment(collection, from, to)
+	seg.reversed = f.reversed
 
 	// Store offset for continue
-	offsets[f.name] = from + len(segment)
+	offsets[f.name] = addSaturated(from, seg.Len())
 
-	return segment
+	return seg
 }
 
 // renderSegment renders the segment.
-func (f *ForTag) renderSegment(context liquid.TagContext, output *string, segment []interface{}) {
+func (f *ForTag) renderSegment(context liquid.TagContext, output *liquid.OutputBuffer, segment segment) {
 	registers := context.Registers()
 
 	// Get or create for_stack
@@ -303,7 +298,7 @@ func (f *ForTag) renderSegment(context liquid.TagContext, output *string, segmen
 		registers.Set("for_stack", forStack)
 	}
 
-	length := len(segment)
+	length := segment.Len()
 
 	// Get parent loop (if any)
 	var parentLoop *liquid.ForloopDrop
@@ -317,6 +312,9 @@ func (f *ForTag) renderSegment(context liquid.TagContext, output *string, segmen
 	// Push to stack
 	forStack = append(forStack, loopVars)
 	registers.Set("for_stack", forStack)
+	// Pop from the stack when the loop ends, even on an error, as Ruby's
+	// ensure.
+	defer registers.Set("for_stack", forStack[:len(forStack)-1])
 
 	// Get underlying Context for Stack
 	ctx := context.Context().(*liquid.Context)
@@ -328,12 +326,15 @@ func (f *ForTag) renderSegment(context liquid.TagContext, output *string, segmen
 
 		// Iterate over segment
 	forLoop:
-		for _, item := range segment {
+		for i := 0; i < length; i++ {
+			ctx.CheckCanceled()
+			segment.chargeItem(ctx, f.forBlock.Nodelist())
+
 			// Set variable
-			ctx.Set(f.variableName, item)
+			ctx.Set(f.variableName, segment.At(i))
 
 			// Render for block
-			f.forBlock.RenderToOutputBuffer(context, output)
+			f.forBlock.RenderToOutput(context, output)
 
 			// Increment loop
 			loopVars.Increment()
@@ -350,16 +351,12 @@ func (f *ForTag) renderSegment(context liquid.TagContext, output *string, segmen
 			}
 		}
 	})
-
-	// Pop from stack
-	forStack = forStack[:len(forStack)-1]
-	registers.Set("for_stack", forStack)
 }
 
 // renderElse renders the else block if collection is empty.
-func (f *ForTag) renderElse(context liquid.TagContext, output *string) {
+func (f *ForTag) renderElse(context liquid.TagContext, output *liquid.OutputBuffer) {
 	if f.elseBlock != nil {
-		f.elseBlock.RenderToOutputBuffer(context, output)
+		f.elseBlock.RenderToOutput(context, output)
 	}
 }
 

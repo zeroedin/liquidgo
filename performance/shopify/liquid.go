@@ -1,26 +1,32 @@
 package shopify
 
 import (
-	"github.com/Notifuse/liquidgo/liquid"
+	"github.com/Notifuse/liquidgo/v5/internal/methodfilters"
+	"github.com/Notifuse/liquidgo/v5/liquid"
 )
 
-// TagConstructor is a function type that creates a tag instance.
-type TagConstructor func(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error)
+// AddTo adds the custom tags and filters of Shopify themes to config.
+func AddTo(config *liquid.EnvironmentConfig) {
+	if config.Tags == nil {
+		config.Tags = map[string]liquid.TagConstructor{}
+	}
+	config.Tags["paginate"] = func(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
+		tag, err := NewPaginate(tagName, markup, parseContext)
+		if err != nil {
+			return nil, err
+		}
+		return tag, nil
+	}
+	config.Tags["form"] = func(tagName, markup string, parseContext liquid.ParseContextInterface) (liquid.Node, error) {
+		tag, err := NewCommentForm(tagName, markup, parseContext)
+		if err != nil {
+			return nil, err
+		}
+		return tag, nil
+	}
 
-// RegisterAll registers all Shopify custom tags and filters with the environment
-func RegisterAll(env *liquid.Environment) {
-	// Register tags
-	env.RegisterTag("paginate", TagConstructor(func(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
-		return NewPaginate(tagName, markup, parseContext)
-	}))
-	env.RegisterTag("form", TagConstructor(func(tagName, markup string, parseContext liquid.ParseContextInterface) (interface{}, error) {
-		return NewCommentForm(tagName, markup, parseContext)
-	}))
-
-	// Register filters (each filter object exposes multiple methods)
-	_ = env.RegisterFilter(&JSONFilter{})
-	_ = env.RegisterFilter(&MoneyFilter{})
-	_ = env.RegisterFilter(&WeightFilter{})
-	_ = env.RegisterFilter(&ShopFilter{})
-	_ = env.RegisterFilter(&TagFilter{})
+	// each filter object exposes several methods
+	for _, filters := range []interface{}{&JSONFilter{}, &MoneyFilter{}, &WeightFilter{}, &ShopFilter{}, &TagFilter{}} {
+		config.Filters = append(config.Filters, methodfilters.Of(filters)...)
+	}
 }

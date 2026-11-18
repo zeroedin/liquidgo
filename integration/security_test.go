@@ -3,8 +3,8 @@ package integration
 import (
 	"testing"
 
-	"github.com/Notifuse/liquidgo/liquid"
-	"github.com/Notifuse/liquidgo/liquid/tags"
+	"github.com/Notifuse/liquidgo/v5/liquid"
+	"github.com/Notifuse/liquidgo/v5/liquid/tags"
 )
 
 // TestSecurity_NoInstanceEval tests that instance_eval is not accessible.
@@ -46,15 +46,13 @@ func TestSecurity_NoInstanceEvalLaterInChain(t *testing.T) {
 	expected := ` 1+1 + 1 `
 
 	// Register a custom filter
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
 
 	// Add a simple filter that adds " + 1" to the input
-	addOneFilter := func(input interface{}) interface{} {
-		return liquid.ToS(input, nil) + " + 1"
+	addOneFilter := func(_ *liquid.Context, input interface{}, _ ...interface{}) (interface{}, error) {
+		return liquid.ToS(input, nil) + " + 1", nil
 	}
 
-	_ = env.RegisterFilter(addOneFilter)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard(), Filters: []liquid.FilterDef{liquid.Filter("add_one", addOneFilter)}})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -63,13 +61,13 @@ func TestSecurity_NoInstanceEvalLaterInChain(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{},
 		RethrowErrors:      false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 
 	// The filter should work, but instance_eval should not be accessible
 	// If instance_eval is accessible, the output would be "2" instead of "1+1 + 1"
@@ -90,8 +88,7 @@ func TestSecurity_DoesNotPermanentlyAddFiltersToSymbolTable(t *testing.T) {
 	// This test verifies that using unknown filters doesn't crash
 	text := ` {{ "some_string" | a_bad_filter }} `
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	tmpl, err := liquid.ParseTemplate(text, &liquid.TemplateOptions{
 		Environment: env,
@@ -100,14 +97,14 @@ func TestSecurity_DoesNotPermanentlyAddFiltersToSymbolTable(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{},
 		RethrowErrors:      false,
-	})
+	}
 
 	// Should not panic or crash
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 
 	// Unknown filters should result in empty output or error message
 	_ = output
@@ -144,8 +141,7 @@ func TestSecurity_MaxDepthNestedBlocksDoesNotRaiseException(t *testing.T) {
 		code += "{% endif %}"
 	}
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	tmpl, err := liquid.ParseTemplate(code, &liquid.TemplateOptions{
 		Environment: env,
@@ -154,13 +150,13 @@ func TestSecurity_MaxDepthNestedBlocksDoesNotRaiseException(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{},
 		RethrowErrors:      false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 	expected := "rendered"
 
 	if output != expected {
@@ -185,8 +181,7 @@ func TestSecurity_MoreThanMaxDepthNestedBlocksRaisesException(t *testing.T) {
 		code += "{% endif %}"
 	}
 
-	env := liquid.NewEnvironment()
-	tags.RegisterStandardTags(env)
+	env := mustEnv(liquid.EnvironmentConfig{Tags: tags.Standard()})
 
 	tmpl, err := liquid.ParseTemplate(code, &liquid.TemplateOptions{
 		Environment: env,
@@ -195,20 +190,20 @@ func TestSecurity_MoreThanMaxDepthNestedBlocksRaisesException(t *testing.T) {
 		t.Fatalf("ParseTemplate() error = %v", err)
 	}
 
-	ctx := liquid.BuildContext(liquid.ContextConfig{
+	ctx := &rubyContext{
 		Environment:        env,
 		StaticEnvironments: []map[string]interface{}{},
 		RethrowErrors:      false,
-	})
+	}
 
-	output := tmpl.Render(ctx, &liquid.RenderOptions{})
+	output := renderRuby(tmpl, ctx, &rubyOptions{})
 
 	// Should contain error about nesting too deep
 	if !contains(output, "Nesting too deep") {
 		t.Errorf("Expected output to contain 'Nesting too deep', got %q", output)
 	}
 
-	errors := tmpl.Errors()
+	errors := rubyErrors(tmpl)
 	if len(errors) == 0 {
 		t.Error("Expected at least one error")
 	} else {
